@@ -171,7 +171,7 @@ miniqmt-cli
 │   ├── orders   --account <name>
 │   └── trades   --account <name>
 └── order
-    ├── buy    --account <name> --code <ts_code> --volume <int> --price <float> [--type {limit,market}] [--dry-run] [--yes] [--confirm-live]
+    ├── buy    --account <name> --code <ts_code> --volume <int> --price <float> [--type {limit,market}] [--dry-run] [--yes] [--confirm-live <last4>]
     ├── sell   (same options as buy)
     └── cancel --account <name> --order-id <id> [--yes]
 ```
@@ -249,7 +249,7 @@ Three layers of defense, **all enforced independently at both CLI and daemon**. 
 **CLI layer**
 
 1. `--account` is required, no default.
-2. CLI fetches account metadata from the daemon (`GET /trade/account/meta?name=<name>`). If the daemon reports `requires_confirm_live = true`, `--confirm-live` must also be present, otherwise the CLI exits without sending the order.
+2. CLI fetches account metadata from the daemon (`GET /trade/account/meta?name=<name>`). If the daemon reports `requires_confirm_live = true`, `--confirm-live <last4>` must also be present with a 4-digit string; otherwise the CLI exits without sending the order. The CLI does **not** verify the last-4 value itself — it just forwards it, and the daemon is the authority.
 3. CLI calls `GET /trade/preview?...` to fetch last price, estimated cost, and account buying power.
 4. CLI generates a `client_req_id` (UUIDv4) for this attempt and remembers it; on retry after a network error the CLI **reuses** the same id.
 5. CLI prints a confirmation table:
@@ -265,12 +265,15 @@ Three layers of defense, **all enforced independently at both CLI and daemon**. 
    ```
 6. On `--dry-run`, the confirmation table is printed and the flow ends (no POST sent).
 7. `--yes` skips the interactive prompt but all other checks still run.
-8. CLI sends `POST /trade/order` with body `{account, code, side, volume, price, type, client_req_id, confirm_live}` where `confirm_live` is a boolean mirroring whether `--confirm-live` was on the CLI.
+8. CLI sends `POST /trade/order` with body `{account, code, side, volume, price, type, client_req_id, confirm_live_last4}` where `confirm_live_last4` is either `null` (no `--confirm-live`) or the 4-digit string passed on the CLI.
 
 **Daemon layer**
 
 1. **Whitelist**: reject if `account` is not in `[accounts.*]`. HTTP 400, no side effects.
-2. **Live gate** (independent of the CLI check): look up the account's `requires_confirm_live`. If true and the request body's `confirm_live` is not literally `true`, return HTTP 400 with `detail = "live account requires confirm_live=true"`. No audit row, no trader call.
+2. **Live gate** (independent of the CLI check): look up the account's `requires_confirm_live`. If true:
+   - `confirm_live_last4` must be present in the request body.
+   - It must equal the last 4 characters of the account's `account_id` (string compare after stripping leading zeros is **not** performed — exact last-4-char match).
+   - Otherwise return HTTP 400 with `detail = "live account requires confirm_live_last4 matching last 4 digits of account_id"`. No audit row, no trader call.
 3. **Idempotency**: look up `client_req_id` in the TTL cache. If present, return the cached response immediately without re-calling `order_stock`. TTL default: 5 minutes.
 4. `audit.append(phase="pre", ...)` — write to `orders.jsonl` **before** calling xttrader (`fsync` on the line).
 5. `xttrader_adapter.order_stock(...)`.
@@ -285,7 +288,7 @@ Three layers of defense, **all enforced independently at both CLI and daemon**. 
 ```json
 {"ts":"2026-04-14T02:23:41.284Z","phase":"pre","client_req_id":"5f2a...",
  "account":"sim","account_id":"55001234","code":"000001.SZ",
- "side":"buy","volume":100,"price":12.34,"type":"limit","confirm_live":false}
+ "side":"buy","volume":100,"price":12.34,"type":"limit","confirm_live_last4":null}
 {"ts":"2026-04-14T02:23:41.319Z","phase":"post","client_req_id":"5f2a...",
  "order_id":"12345","seq":7,"status":"ok"}
 ```
@@ -405,8 +408,10 @@ Tests live in `tests/miniqmt_cli/`, mirroring `tests/tushare_cli/`.
 - **Audit integrity**: `pre` record is on disk (and `fsync`-ed) before the xttrader call; `post` record (with `status=error`) is written even when xttrader raises.
 - **Whitelist enforcement (CLI)**: an account name not in `[accounts.*]` causes the CLI to exit 3 with no HTTP request.
 - **Whitelist enforcement (daemon, bypass-CLI)**: a direct `POST /trade/order` with an unknown account returns 400, with zero `order_stock` invocations on the fake and zero audit rows.
-- **Live-account gate (CLI)**: `miniqmt-cli order buy --account live ...` without `--confirm-live` exits 3 before any HTTP request.
-- **Live-account gate (daemon, bypass-CLI)**: a direct `POST /trade/order` for a `requires_confirm_live = true` account without `confirm_live: true` in the body returns 400, with zero `order_stock` invocations and zero audit rows.
+- **Live-account gate (CLI, no flag)**: `miniqmt-cli order buy --account live ...` without `--confirm-live` exits 3 before any HTTP request.
+- **Live-account gate (daemon, no field)**: a direct `POST /trade/order` for a `requires_confirm_live = true` account without `confirm_live_last4` returns 400.
+- **Live-account gate (daemon, wrong last4)**: `confirm_live_last4 = "9999"` against an account_id ending in `1234` returns 400, no `order_stock` invocations, no audit rows.
+- **Live-account gate (daemon, correct last4)**: `confirm_live_last4 = "1234"` against the same account proceeds through the full order flow.
 - **Dry-run**: `--dry-run` prints the confirmation table, makes no `POST /trade/order` call, writes no audit row, exits 3.
 - **`--yes`**: skips the interactive prompt, still runs all other guards, still writes audit rows, still enforces live gate.
 - **Idempotency**: sending the same `client_req_id` twice returns the same `order_id` both times; the fake `order_stock` is called **exactly once**.
@@ -488,7 +493,7 @@ None blocking v1. Items intentionally deferred to post-v1:
 - Multi-account aggregation views
 - Reconnect/retry policy on xttrader session drops (v1 simply re-logs-in on next request)
 - Automatic audit log rotation (v1 keeps a single append-only file; v1 does emit a WARN when the file exceeds 100 MB, per §6.3)
-- Stronger `--confirm-live` ergonomics (e.g. requiring the last 4 digits of the account_id rather than a bare flag) — tracked as a discussion item
+<!-- confirm-live last4 now in v1 (§6.3) -->
 
 ## 11. Scope decisions (agreed in brainstorming)
 
