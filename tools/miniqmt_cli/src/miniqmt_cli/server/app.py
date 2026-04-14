@@ -1,0 +1,37 @@
+"""FastAPI app factory for miniqmt-cli daemon."""
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from miniqmt_cli.server.routes_data import router as data_router
+from miniqmt_cli.server.routes_stream import router as stream_router
+from miniqmt_cli.server.routes_trade import router as trade_router
+from miniqmt_cli.server.session import SessionManager
+from miniqmt_cli.server_config import ServerConfig
+
+
+def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
+    app = FastAPI(title="miniqmt-cli daemon", version="0.1.0")
+    app.state.session = SessionManager(cfg, dry_run=dry_run)
+    app.include_router(data_router)
+    app.include_router(trade_router)
+    app.include_router(stream_router)
+
+    @app.get("/version")
+    def version():
+        return {"tag": "sp3", "version": "1.0"}
+
+    @app.get("/health")
+    async def health():
+        sess = app.state.session
+        if dry_run:
+            return {"state": "ready", "dry_run": True}
+        try:
+            await sess.ensure_xtquant()
+        except Exception as e:
+            return {"state": "daemon_up_xtquant_missing", "error": str(e)}
+        if sess.trader_logged_in_count() == 0:
+            return {"state": "daemon_up_no_trader"}
+        return {"state": "ready"}
+
+    return app
