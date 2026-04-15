@@ -30,6 +30,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8765
     qmt_path: str = ""
+    userdata_mini_path: str = ""  # optional; defaults to qmt_path/userdata_mini
     session_id: int = 0  # 0 means "use os.getpid()"
     accounts: Dict[str, AccountConfig] = field(default_factory=dict)
     audit_log_path: str = "~/.miniqmt_cli/orders.jsonl"
@@ -41,6 +42,13 @@ class ServerConfig:
 
     def resolved_audit_log_path(self) -> Path:
         return Path(self.audit_log_path).expanduser()
+
+    def resolved_userdata_mini_path(self) -> str:
+        """Path xttrader.XtQuantTrader() needs: the userdata_mini dir.
+        Defaults to qmt_path/userdata_mini (the standard miniQMT layout)."""
+        if self.userdata_mini_path:
+            return self.userdata_mini_path
+        return os.path.join(self.qmt_path, "userdata_mini")
 
 
 def _config_path(override: Optional[str] = None) -> Path:
@@ -62,6 +70,7 @@ def load_server_config(path_override: Optional[str] = None) -> ServerConfig:
         cfg.host = server.get("host", cfg.host)
         cfg.port = int(server.get("port", cfg.port))
         cfg.qmt_path = server.get("qmt_path", cfg.qmt_path)
+        cfg.userdata_mini_path = server.get("userdata_mini_path", cfg.userdata_mini_path)
         cfg.session_id = int(server.get("session_id", cfg.session_id))
 
         accounts_raw = data.get("accounts", {}) or {}

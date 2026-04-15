@@ -45,6 +45,42 @@ if (-not (Test-Path $RepoPath)) {
 }
 Set-Location $RepoPath
 
+# Stop the daemon BEFORE pip install. Windows file locking means the
+# running daemon holds .py / .pyd handles that prevent pip from updating
+# the editable install in-place. Without this we get "access denied".
+$task = Get-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
+$shouldRestart = (-not $SkipRestart) -and ($task -ne $null)
+if ($shouldRestart) {
+    Log "stopping Scheduled Task $WinService before pip install"
+    try {
+        Stop-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
+    } catch {
+        # Task may not have been running; ignore.
+    }
+
+    # Stop-ScheduledTask only kills the task's direct action process
+    # (cmd.exe). The child python.exe may be orphaned and keep holding
+    # file handles, blocking pip install with "access denied". Kill any
+    # python still listening on port 8765 explicitly.
+    for ($i = 0; $i -lt 10; $i++) {
+        $owners = @()
+        try {
+            $owners = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.OwningProcess } |
+                Where-Object { $_ -and $_ -gt 0 } |
+                Select-Object -Unique
+        } catch { }
+        if ($owners.Count -eq 0) { break }
+        foreach ($procId in $owners) {
+            try {
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 1
+}
+
 Log "pip install -e tools\miniqmt_cli (editable, quiet)"
 & $WinPython -m pip install -e "tools\miniqmt_cli" --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
@@ -53,23 +89,14 @@ Log "import smoke test"
 & $WinPython -c "import miniqmt_cli; print('miniqmt_cli', miniqmt_cli.__version__)"
 if ($LASTEXITCODE -ne 0) { throw "import failed" }
 
-if (-not $SkipRestart) {
-    $task = Get-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
-    if (-not $task) {
-        Write-Warning "Scheduled Task $WinService not registered; skipping restart. Run bootstrap.ps1 first."
-    } else {
-        Log "restarting Scheduled Task $WinService"
-        try {
-            Stop-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
-        } catch {
-            # Task may not be running; that's fine.
-        }
-        Start-Sleep -Seconds 2
-        Start-ScheduledTask -TaskName $WinService
-        Start-Sleep -Seconds 1
-        $task = Get-ScheduledTask -TaskName $WinService
-        Log "task state: $($task.State)"
-    }
+if ($shouldRestart) {
+    Log "starting Scheduled Task $WinService"
+    Start-ScheduledTask -TaskName $WinService
+    Start-Sleep -Seconds 1
+    $task = Get-ScheduledTask -TaskName $WinService
+    Log "task state: $($task.State)"
+} elseif (-not $SkipRestart -and $task -eq $null) {
+    Write-Warning "Scheduled Task $WinService not registered; skipping restart. Run bootstrap.ps1 first."
 }
 
 if (-not $SkipHealth) {

@@ -78,7 +78,7 @@ class SessionManager:
             acc_cfg = self.get_account(account_name)
             trader = xttrader_adapter.create_trader(
                 self.cfg.resolved_session_id(),
-                self.cfg.qmt_path,
+                self.cfg.resolved_userdata_mini_path(),
             )
             acc = xttrader_adapter.subscribe_account(trader, acc_cfg)
             handle = TraderHandle(trader=trader, acc=acc)
