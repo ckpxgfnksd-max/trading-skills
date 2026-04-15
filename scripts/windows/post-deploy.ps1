@@ -5,7 +5,8 @@
 
 .DESCRIPTION
     Installs (editable) the miniqmt_cli package from the deployed tree,
-    optionally restarts the nssm service, and probes /health. Idempotent.
+    optionally restarts the MiniqmtDaemon Scheduled Task, and probes
+    /health. Idempotent.
 
 .PARAMETER WinRepo
     Install directory containing tools\miniqmt_cli (forward slashes ok).
@@ -14,10 +15,10 @@
     Python interpreter to invoke. Typically 'python' or a full path.
 
 .PARAMETER WinService
-    nssm service name to restart. Default: MiniqmtDaemon.
+    Scheduled Task name to restart. Default: MiniqmtDaemon.
 
 .PARAMETER SkipRestart
-    Skip the service restart step.
+    Skip the task restart step.
 
 .PARAMETER SkipHealth
     Skip the post-restart health probe.
@@ -53,15 +54,21 @@ Log "import smoke test"
 if ($LASTEXITCODE -ne 0) { throw "import failed" }
 
 if (-not $SkipRestart) {
-    $nssm = Get-Command nssm -ErrorAction SilentlyContinue
-    if (-not $nssm) {
-        Write-Warning "nssm not found on PATH; skipping service restart"
+    $task = Get-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Warning "Scheduled Task $WinService not registered; skipping restart. Run bootstrap.ps1 first."
     } else {
-        Log "nssm restart $WinService"
-        & nssm restart $WinService | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "nssm restart failed (exit $LASTEXITCODE). Run bootstrap.ps1?"
+        Log "restarting Scheduled Task $WinService"
+        try {
+            Stop-ScheduledTask -TaskName $WinService -ErrorAction SilentlyContinue
+        } catch {
+            # Task may not be running; that's fine.
         }
+        Start-Sleep -Seconds 2
+        Start-ScheduledTask -TaskName $WinService
+        Start-Sleep -Seconds 1
+        $task = Get-ScheduledTask -TaskName $WinService
+        Log "task state: $($task.State)"
     }
 }
 
