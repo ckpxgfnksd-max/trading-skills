@@ -169,7 +169,7 @@ def step_local_config(state: WizardState) -> None:
         ok(f"already exists at {CLIENT_CONFIG_PATH}")
     else:
         CLIENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CLIENT_CONFIG_PATH.write_text(client_config.TEMPLATE)
+        CLIENT_CONFIG_PATH.write_text(client_config.TEMPLATE, encoding="utf-8")
         ok(f"created {CLIENT_CONFIG_PATH}")
     info("Mac CLI will reach the daemon at http://127.0.0.1:8765 via SSH tunnel (step 8).")
     state.mark("local_config")

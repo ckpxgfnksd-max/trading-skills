@@ -48,3 +48,7 @@ cli.add_command(ticks)
 cli.add_command(stream)
 cli.add_command(account)
 cli.add_command(order)
+
+
+if __name__ == "__main__":
+    cli()

@@ -46,7 +46,7 @@ def client_set_server_url(url):
     path = Path.home() / ".miniqmt_cli" / "client.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     else:
         text = client_config.TEMPLATE
     lines = text.splitlines()
@@ -61,7 +61,7 @@ def client_set_server_url(url):
             new_lines.append(line)
     if not replaced:
         new_lines.append(f'server_url = "{url}"')
-    path.write_text("\n".join(new_lines) + "\n")
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     click.echo(f"set server_url={url} in {path}")
 
 

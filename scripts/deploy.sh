@@ -31,7 +31,11 @@ cd "$REPO_ROOT"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 TARBALL="/tmp/miniqmt-deploy-${STAMP}.tar.gz"
-REMOTE_TARBALL="/tmp/miniqmt-deploy-${STAMP}.tar.gz"
+# Stage the tarball inside $WIN_REPO itself — avoids Unix-style /tmp
+# assumptions on Windows and works as long as $WIN_REPO already exists
+# (which bootstrap.ps1 guarantees).
+REMOTE_TARBALL_REL="_deploy-${STAMP}.tar.gz"
+REMOTE_TARBALL="${WIN_REPO}/${REMOTE_TARBALL_REL}"
 
 cleanup() {
   rm -f "$TARBALL"
@@ -64,17 +68,21 @@ scp -q "$TARBALL" "$WIN_HOST:$REMOTE_TARBALL"
 
 log "extracting on $WIN_HOST into $WIN_REPO"
 # Windows 10+ ships tar.exe; this works under cmd.exe default shell.
-ssh "$WIN_HOST" "if not exist \"${WIN_REPO//\//\\}\" mkdir \"${WIN_REPO//\//\\}\"" || true
-ssh "$WIN_HOST" "cd /d \"${WIN_REPO//\//\\}\" && tar -xzf \"${REMOTE_TARBALL//\//\\}\" && del \"${REMOTE_TARBALL//\//\\}\""
+WIN_REPO_BACK="${WIN_REPO//\//\\}"
+ssh "$WIN_HOST" "if not exist \"$WIN_REPO_BACK\" mkdir \"$WIN_REPO_BACK\"" || true
+ssh "$WIN_HOST" "cd /d \"$WIN_REPO_BACK\" && tar -xzf \"$REMOTE_TARBALL_REL\" && del \"$REMOTE_TARBALL_REL\""
 
 log "running post-deploy script on $WIN_HOST"
-ARGS="-WinRepo '$WIN_REPO' -WinPython '$WIN_PYTHON' -WinService '$WIN_SERVICE'"
+# Pass arguments without outer quotes. cmd.exe does not strip single
+# quotes, so they would leak into the PowerShell parameter values.
+# WIN_REPO, WIN_PYTHON, WIN_SERVICE must not contain spaces.
+ARGS="-WinRepo $WIN_REPO -WinPython $WIN_PYTHON -WinService $WIN_SERVICE"
 if [[ "${SKIP_RESTART:-0}" == "1" ]]; then
   ARGS="$ARGS -SkipRestart"
 fi
 if [[ "${SKIP_HEALTH:-0}" == "1" ]]; then
   ARGS="$ARGS -SkipHealth"
 fi
-ssh "$WIN_HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"${WIN_REPO//\//\\}\\scripts\\windows\\post-deploy.ps1\" $ARGS"
+ssh "$WIN_HOST" "powershell -NoProfile -ExecutionPolicy Bypass -File \"${WIN_REPO_BACK}\\scripts\\windows\\post-deploy.ps1\" $ARGS"
 
 log "done."

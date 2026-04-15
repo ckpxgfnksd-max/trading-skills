@@ -55,14 +55,21 @@ if (-not (Test-Path $WinRepo)) {
 $logPath = Join-Path $WinRepo "daemon.log"
 Log "daemon log → $logPath"
 
-# 3. Build the Scheduled Task
-# cmd.exe wraps `python -m miniqmt_cli.main serve` and redirects stdout+stderr
-# to daemon.log, relative to the task's working directory.
-$cmdArgs = "/c `"python -m miniqmt_cli.main serve >> `"`"$logPath`"`" 2>&1`""
+# 3. Write a small wrapper .cmd file to avoid Task Scheduler quoting hell.
+# The wrapper sets cwd, runs the daemon, and appends stdout+stderr to daemon.log.
+$wrapperPath = Join-Path $WinRepo "run-daemon.cmd"
+$wrapperBody = @"
+@echo off
+cd /d "$WinRepo"
+"$WinPython" -m miniqmt_cli.main serve >> "$logPath" 2>&1
+"@
+Set-Content -Path $wrapperPath -Value $wrapperBody -Encoding ASCII
+Log "wrapper script → $wrapperPath"
 
+# 4. Build the Scheduled Task. -Execute points at the .cmd file, so there
+# are no nested-quote gymnastics to worry about.
 $action = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument $cmdArgs `
+    -Execute $wrapperPath `
     -WorkingDirectory $WinRepo
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

@@ -77,5 +77,7 @@ def write_template(path: Optional[Path] = None) -> Path:
     target = path or (Path.home() / ".miniqmt_cli" / "client.toml")
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
-        target.write_text(TEMPLATE)
+        # TOML spec requires UTF-8; be explicit so Windows doesn't fall back
+        # to GBK / CP936 and break tomllib on subsequent reads.
+        target.write_text(TEMPLATE, encoding="utf-8")
     return target
