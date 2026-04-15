@@ -11,6 +11,7 @@ from miniqmt_cli.commands.kline import kline
 from miniqmt_cli.commands.order import order
 from miniqmt_cli.commands.sector import sector
 from miniqmt_cli.commands.server import health, serve, version
+from miniqmt_cli.commands.setup import setup
 from miniqmt_cli.commands.stream import stream
 from miniqmt_cli.commands.tick import tick
 from miniqmt_cli.commands.ticks import ticks
@@ -35,6 +36,7 @@ def cli(ctx, fmt, config_path):
 
 
 cli.add_command(config_group)
+cli.add_command(setup)
 cli.add_command(version)
 cli.add_command(health)
 cli.add_command(serve)
