@@ -1,6 +1,6 @@
 ---
 name: trading-analysis
-description: Analyze A-share money flow from tick-level data using the trading-analysis CLI. Use this skill whenever the user mentions money flow, capital flow, main force inflow/outflow, institutional buying, tick-level analysis, order size classification (super-large/large/medium/small orders), or wants to know whether smart money is buying or selling a stock. Also use when the user asks about 资金流向, 主力资金, 大单, 超大单, 散户, or 逐笔分析.
+description: Analyze A-share money flow from tick-level data using the trading-analysis CLI, with both historical and real-time modes. Use this skill whenever the user mentions money flow, capital flow, main force inflow/outflow, institutional buying, tick-level analysis, order size classification (super-large/large/medium/small orders), real-time monitoring of capital flow, or wants to know whether smart money is buying or selling a stock. Also use when the user asks about 资金流向, 主力资金, 大单, 超大单, 散户, 逐笔分析, or 实时监控.
 ---
 
 # trading-analysis: Tick-Level Money Flow Analysis
@@ -67,6 +67,25 @@ trading-analysis moneyflow --code 002028.SZ --thresholds 4,20,100
 trading-analysis moneyflow --code 002028.SZ --config ~/.miniqmt_cli/client.toml
 ```
 
+### Real-time Mode (--live)
+
+Polls the daemon for latest tick snapshots every N seconds, accumulates deltas into a running summary, and displays via Rich Live (in-place terminal refresh). Ctrl+C to stop; prints final summary on exit.
+
+```bash
+# Single stock real-time (default 10s refresh)
+trading-analysis moneyflow --code 002028.SZ --live
+
+# Multiple stocks real-time ranking
+trading-analysis moneyflow --code 002028.SZ --code 000859.SZ --code 300618.SZ --live
+
+# Custom refresh interval (30 seconds)
+trading-analysis moneyflow --code 002028.SZ --live --interval 30
+```
+
+- Single stock: full four-tier table, updated in-place
+- Multiple stocks: compact ranking table sorted by main force net inflow
+- Requires market hours for meaningful data; outside trading hours the display will show zeros
+
 ## Parameter Reference
 
 | Parameter | Default | Format |
@@ -78,6 +97,8 @@ trading-analysis moneyflow --code 002028.SZ --config ~/.miniqmt_cli/client.toml
 | `--format` | `table` | `table` / `json` / `csv` |
 | `--thresholds` | `4,20,100` | comma-separated wan |
 | `--config` | from miniqmt-cli client.toml | path |
+| `--live` | off | flag |
+| `--interval` | `10` | seconds |
 
 ## Output Example
 
@@ -121,3 +142,5 @@ Multiple stocks append a ranking:
 | "无数据" | Non-trading hours, invalid code, or no cached data | Check code format, try during market hours |
 | All tiers show 0 | No trading activity in the time range | Widen the time range |
 | 大单/超大单 always 0 | 3-second avg too small to hit threshold | Lower thresholds: `--thresholds 2,10,50` |
+| Live mode shows all zeros | Outside trading hours, no new ticks | Run during market hours (09:30-15:00) |
+| Live mode not updating | Daemon not returning fresh snapshots | Check `miniqmt-cli health`; ensure miniQMT client is open |
