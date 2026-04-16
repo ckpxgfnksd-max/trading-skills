@@ -85,3 +85,112 @@ class TestClassifyDirection:
     def test_equal_to_bid_is_sell(self):
         delta = {"last_price": 9.9, "ask0": 10.1, "bid0": 9.9}
         assert classify_direction(delta) == "sell"
+
+
+from trading_analysis.moneyflow import (
+    classify_tier,
+    aggregate_moneyflow,
+    DEFAULT_THRESHOLDS,
+    MoneyFlowSummary,
+)
+
+
+class TestClassifyTier:
+    def test_small(self):
+        assert classify_tier(30_000) == "small"
+
+    def test_medium(self):
+        assert classify_tier(100_000) == "medium"
+
+    def test_large(self):
+        assert classify_tier(500_000) == "large"
+
+    def test_extra_large(self):
+        assert classify_tier(1_500_000) == "xlarge"
+
+    def test_boundary_medium(self):
+        assert classify_tier(40_000) == "medium"
+
+    def test_boundary_large(self):
+        assert classify_tier(200_000) == "large"
+
+    def test_boundary_xlarge(self):
+        assert classify_tier(1_000_000) == "xlarge"
+
+    def test_custom_thresholds(self):
+        assert classify_tier(50_000, thresholds=(50_000, 200_000, 1_000_000)) == "medium"
+        assert classify_tier(49_999, thresholds=(50_000, 200_000, 1_000_000)) == "small"
+
+
+class TestAggregateMoneyflow:
+    def test_single_buy_xlarge(self):
+        deltas = [{
+            "delta_amount": 2_000_000, "delta_volume": 100, "delta_txn": 1,
+            "avg_amount": 2_000_000, "last_price": 10.2,
+            "ask0": 10.1, "bid0": 9.9, "stime": "093003",
+        }]
+        result = aggregate_moneyflow(deltas)
+        assert result.tiers["xlarge"].buy == 2_000_000
+        assert result.tiers["xlarge"].sell == 0
+        assert result.tiers["xlarge"].net == 2_000_000
+
+    def test_single_sell_small(self):
+        deltas = [{
+            "delta_amount": 10_000, "delta_volume": 10, "delta_txn": 5,
+            "avg_amount": 2_000, "last_price": 9.8,
+            "ask0": 10.1, "bid0": 9.9, "stime": "093003",
+        }]
+        result = aggregate_moneyflow(deltas)
+        assert result.tiers["small"].sell == 10_000
+        assert result.tiers["small"].buy == 0
+
+    def test_neutral_split_half(self):
+        deltas = [{
+            "delta_amount": 100_000, "delta_volume": 50, "delta_txn": 2,
+            "avg_amount": 50_000, "last_price": 10.0,
+            "ask0": 10.1, "bid0": 9.9, "stime": "093003",
+        }]
+        result = aggregate_moneyflow(deltas)
+        assert result.tiers["medium"].buy == 50_000
+        assert result.tiers["medium"].sell == 50_000
+        assert result.tiers["medium"].net == 0
+
+    def test_main_force_net(self):
+        deltas = [
+            {
+                "delta_amount": 2_000_000, "delta_volume": 100, "delta_txn": 1,
+                "avg_amount": 2_000_000, "last_price": 10.2,
+                "ask0": 10.1, "bid0": 9.9, "stime": "093003",
+            },
+            {
+                "delta_amount": 500_000, "delta_volume": 50, "delta_txn": 1,
+                "avg_amount": 500_000, "last_price": 9.8,
+                "ask0": 10.1, "bid0": 9.9, "stime": "093006",
+            },
+        ]
+        result = aggregate_moneyflow(deltas)
+        assert result.main_force_net == 2_000_000 - 500_000
+
+    def test_stats_counts(self):
+        deltas = [
+            {
+                "delta_amount": 100_000, "delta_volume": 10, "delta_txn": 5,
+                "avg_amount": 20_000, "last_price": 10.2,
+                "ask0": 10.1, "bid0": 9.9, "stime": "093003",
+            },
+            {
+                "delta_amount": 50_000, "delta_volume": 5, "delta_txn": 3,
+                "avg_amount": 16_667, "last_price": 9.8,
+                "ask0": 10.1, "bid0": 9.9, "stime": "093006",
+            },
+            {
+                "delta_amount": 80_000, "delta_volume": 8, "delta_txn": 4,
+                "avg_amount": 20_000, "last_price": 10.0,
+                "ask0": 10.1, "bid0": 9.9, "stime": "093009",
+            },
+        ]
+        result = aggregate_moneyflow(deltas)
+        assert result.stats["buy_count"] == 1
+        assert result.stats["sell_count"] == 1
+        assert result.stats["neutral_count"] == 1
+        assert result.stats["total_intervals"] == 3

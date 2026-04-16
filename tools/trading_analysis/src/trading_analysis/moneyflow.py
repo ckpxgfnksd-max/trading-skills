@@ -36,3 +36,80 @@ def classify_direction(delta: dict) -> str:
     if price <= delta["bid0"]:
         return "sell"
     return "neutral"
+
+
+DEFAULT_THRESHOLDS = (40_000, 200_000, 1_000_000)
+
+TIER_NAMES = ("small", "medium", "large", "xlarge")
+
+
+def classify_tier(
+    avg_amount: float,
+    thresholds: tuple[float, float, float] = DEFAULT_THRESHOLDS,
+) -> str:
+    if avg_amount >= thresholds[2]:
+        return "xlarge"
+    if avg_amount >= thresholds[1]:
+        return "large"
+    if avg_amount >= thresholds[0]:
+        return "medium"
+    return "small"
+
+
+@dataclass
+class TierBucket:
+    buy: float = 0.0
+    sell: float = 0.0
+
+    @property
+    def net(self) -> float:
+        return self.buy - self.sell
+
+
+@dataclass
+class MoneyFlowSummary:
+    tiers: dict[str, TierBucket] = field(
+        default_factory=lambda: {name: TierBucket() for name in TIER_NAMES}
+    )
+    stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "total_intervals": 0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "neutral_count": 0,
+        }
+    )
+
+    @property
+    def main_force_net(self) -> float:
+        return self.tiers["xlarge"].net + self.tiers["large"].net
+
+    @property
+    def retail_net(self) -> float:
+        return self.tiers["medium"].net + self.tiers["small"].net
+
+
+def aggregate_moneyflow(
+    deltas: list[dict],
+    thresholds: tuple[float, float, float] = DEFAULT_THRESHOLDS,
+) -> MoneyFlowSummary:
+    summary = MoneyFlowSummary()
+    for d in deltas:
+        direction = classify_direction(d)
+        tier = classify_tier(d["avg_amount"], thresholds)
+        bucket = summary.tiers[tier]
+        amount = d["delta_amount"]
+
+        if direction == "buy":
+            bucket.buy += amount
+            summary.stats["buy_count"] += 1
+        elif direction == "sell":
+            bucket.sell += amount
+            summary.stats["sell_count"] += 1
+        else:
+            bucket.buy += amount / 2
+            bucket.sell += amount / 2
+            summary.stats["neutral_count"] += 1
+
+        summary.stats["total_intervals"] += 1
+    return summary
