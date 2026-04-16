@@ -24,23 +24,24 @@ def _common_opts(f):
     f = click.option("--dry-run", is_flag=True, default=False)(f)
     f = click.option("--yes", is_flag=True, default=False)(f)
     f = click.option("--confirm-live", default=None, help="Last 4 digits of live account_id")(f)
+    f = click.option("--wait", "wait_secs", default=None, type=int, help="Wait N seconds for terminal order status")(f)
     return f
 
 
 @order.command()
 @_common_opts
 @click.pass_context
-def buy(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live):
+def buy(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
     """Buy order."""
-    _place(ctx, "buy", account, code, volume, price, order_type, dry_run, yes, confirm_live)
+    _place(ctx, "buy", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs)
 
 
 @order.command()
 @_common_opts
 @click.pass_context
-def sell(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live):
+def sell(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
     """Sell order."""
-    _place(ctx, "sell", account, code, volume, price, order_type, dry_run, yes, confirm_live)
+    _place(ctx, "sell", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs)
 
 
 @order.command("cancel")
@@ -68,7 +69,10 @@ def cancel_cmd(ctx, account, order_id, yes):
     click.echo(format_output(resp, ctx.obj["fmt"]))
 
 
-def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, confirm_live):
+TERMINAL_STATUSES = {"filled", "cancelled", "rejected"}
+
+
+def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
     t = make_transport(ctx)
     meta = t.get("/trade/account/meta", params={"name": account})
     if meta.get("requires_confirm_live"):
@@ -122,3 +126,36 @@ def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, co
     if resp.get("status") == "rejected":
         raise BrokerReject(f"broker rejected: seq={resp.get('seq')}")
     click.echo(format_output(resp, ctx.obj["fmt"]))
+
+    if wait_secs and resp.get("seq"):
+        _wait_for_terminal(t, account, resp["seq"], wait_secs)
+
+
+def _wait_for_terminal(t, account, seq, timeout):
+    """Stream order events and wait for a terminal status matching seq."""
+    import time
+
+    click.echo(f"等待成交... (最多{timeout}秒)")
+    deadline = time.time() + timeout
+    try:
+        for event in t.stream("/stream/order", params={"account": account}):
+            if time.time() > deadline:
+                break
+            evt_type = event.get("type")
+            if evt_type == "order_status" and event.get("order_id") == seq:
+                status = event.get("status", "")
+                filled = event.get("filled_volume", 0)
+                avg_px = event.get("avg_price", 0)
+                click.echo(f"  [{status}] {event.get('code')} {event.get('side', '').upper()} "
+                           f"{filled}股 @ {avg_px}")
+                if status in TERMINAL_STATUSES:
+                    return
+            elif evt_type == "trade" and event.get("order_id") == seq:
+                click.echo(f"  [成交] {event.get('code')} {event.get('volume')}股 @ {event.get('price')}")
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        pass
+    click.echo(f"等待超时 ({timeout}秒)")
+    ctx = click.get_current_context()
+    ctx.exit(1)

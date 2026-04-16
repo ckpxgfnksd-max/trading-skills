@@ -37,3 +37,17 @@ def stream_kline(ctx, codes, period):
             click.echo(format_row(event, ctx.obj["fmt"]))
     except KeyboardInterrupt:
         pass
+
+
+@stream.command("order")
+@click.option("--account", default=None, help="Filter by account name")
+@click.pass_context
+def stream_order(ctx, account):
+    """Stream order status events (Ctrl+C to stop)."""
+    t = make_transport(ctx)
+    params = {"account": account} if account else None
+    try:
+        for event in t.stream("/stream/order", params=params):
+            click.echo(format_row(event, ctx.obj["fmt"]))
+    except KeyboardInterrupt:
+        pass

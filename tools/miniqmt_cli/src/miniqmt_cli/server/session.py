@@ -40,6 +40,9 @@ class SessionManager:
         self._idem_lock = asyncio.Lock()
         self._xtquant_loaded = False
         self._xtquant_load_lock = asyncio.Lock()
+        # Order event subscriber management
+        self._order_subscribers: list[asyncio.Queue] = []
+        self._sub_lock = asyncio.Lock()
 
     def get_account(self, name: str) -> AccountConfig:
         acc = self.cfg.accounts.get(name)
@@ -63,6 +66,32 @@ class SessionManager:
             self._login_locks[account_name] = lock
         return lock
 
+    def dispatch_order_event(self, event: dict) -> None:
+        """Called from xtquant callback thread. Fan-out to all subscribers.
+
+        Thread-safe: asyncio.Queue.put_nowait is safe to call from any thread.
+        """
+        for q in self._order_subscribers:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                log.warning("order subscriber queue full, dropping event")
+
+    async def subscribe_orders(self) -> asyncio.Queue:
+        """Register a new order event subscriber. Returns its queue."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        async with self._sub_lock:
+            self._order_subscribers.append(q)
+        return q
+
+    async def unsubscribe_orders(self, q: asyncio.Queue) -> None:
+        """Remove an order event subscriber."""
+        async with self._sub_lock:
+            try:
+                self._order_subscribers.remove(q)
+            except ValueError:
+                pass
+
     async def get_trader(self, account_name: str) -> TraderHandle:
         if self.dry_run:
             raise RuntimeError("trader is unavailable in --dry-run daemon mode")
@@ -79,6 +108,8 @@ class SessionManager:
             trader = xttrader_adapter.create_trader(
                 self.cfg.resolved_session_id(),
                 self.cfg.resolved_userdata_mini_path(),
+                dispatcher=self.dispatch_order_event,
+                account_name=account_name,
             )
             acc = xttrader_adapter.subscribe_account(trader, acc_cfg)
             handle = TraderHandle(trader=trader, acc=acc)

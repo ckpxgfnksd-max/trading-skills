@@ -82,6 +82,9 @@ class FakeTrader:
         self._next_seq = 100
         self.should_fail_order = False
 
+    def register_callback(self, callback):
+        self.callback = callback
+
     def start(self):
         self.started = True
 

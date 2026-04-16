@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncIterator, Dict, List, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
@@ -138,4 +138,35 @@ async def stream_kline(
 ):
     return StreamingResponse(
         _kline_generator(request, codes, period), media_type="text/event-stream"
+    )
+
+
+async def _order_generator(
+    request: Request, account: Optional[str]
+) -> AsyncIterator[str]:
+    sess = _session(request)
+    queue = await sess.subscribe_orders()
+    try:
+        yield _sse({"event": "subscribed", "filter_account": account})
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            if account and event.get("account") != account:
+                continue
+            yield _sse(event)
+    finally:
+        await sess.unsubscribe_orders(queue)
+
+
+@router.get("/order")
+async def stream_order(
+    request: Request,
+    account: Optional[str] = Query(None),
+):
+    return StreamingResponse(
+        _order_generator(request, account), media_type="text/event-stream"
     )

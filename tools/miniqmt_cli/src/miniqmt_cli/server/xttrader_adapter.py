@@ -1,10 +1,13 @@
 """Adapter wrapping xtquant.xttrader. Keeps a per-account XtQuantTrader instance."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import logging
+from typing import Any, Callable, Dict, List, Optional
 
 from miniqmt_cli.server.xtquant_loader import load_xtquant
 from miniqmt_cli.server_config import AccountConfig
+
+log = logging.getLogger(__name__)
 
 
 def _xttrader_module():
@@ -17,9 +20,105 @@ def _xttype_module():
     return xttype
 
 
-def create_trader(session_id: int, qmt_userdata_path: str):
+class TraderCallback:
+    """Bridge xtquant's callback thread to the daemon's event dispatcher.
+
+    Each method extracts relevant fields from xtquant objects and forwards
+    a normalized dict to the dispatcher callable.
+    """
+
+    def __init__(self, dispatcher: Callable[[dict], None], account_name: str):
+        self._dispatch = dispatcher
+        self._account = account_name
+
+    def on_disconnected(self):
+        log.warning("xttrader disconnected for account %s", self._account)
+
+    def on_order_stock_async_response(self, response):
+        try:
+            self._dispatch({
+                "type": "order_response",
+                "account": self._account,
+                "seq": int(getattr(response, "seq", 0)),
+                "code": getattr(response, "stock_code", ""),
+            })
+        except Exception:
+            log.exception("on_order_stock_async_response dispatch failed")
+
+    def on_order_event(self, order):
+        try:
+            self._dispatch({
+                "type": "order_status",
+                "account": self._account,
+                "order_id": int(getattr(order, "order_id", 0)),
+                "status": _map_order_status(getattr(order, "order_status", -1)),
+                "code": getattr(order, "stock_code", ""),
+                "side": _map_direction(getattr(order, "order_type", -1)),
+                "volume": int(getattr(order, "order_volume", 0)),
+                "filled_volume": int(getattr(order, "traded_volume", 0)),
+                "avg_price": float(getattr(order, "traded_price", 0.0)),
+                "frozen": float(getattr(order, "frozen", 0.0)),
+            })
+        except Exception:
+            log.exception("on_order_event dispatch failed")
+
+    def on_trade_event(self, trade):
+        try:
+            self._dispatch({
+                "type": "trade",
+                "account": self._account,
+                "order_id": int(getattr(trade, "order_id", 0)),
+                "trade_id": int(getattr(trade, "traded_id", 0)),
+                "code": getattr(trade, "stock_code", ""),
+                "side": _map_direction(getattr(trade, "order_type", -1)),
+                "price": float(getattr(trade, "traded_price", 0.0)),
+                "volume": int(getattr(trade, "traded_volume", 0)),
+                "amount": float(getattr(trade, "traded_amount", 0.0)),
+            })
+        except Exception:
+            log.exception("on_trade_event dispatch failed")
+
+    def on_account_status(self, status):
+        pass  # not needed for Phase 1
+
+
+def _map_order_status(raw_status: int) -> str:
+    """Map xtquant order_status integer to a human-readable string."""
+    mapping = {
+        48: "unknown",
+        49: "submitted",
+        50: "confirmed",
+        51: "partially_filled",
+        52: "cancelled",
+        53: "rejected",
+        54: "expired",
+        55: "pending_cancel",
+        56: "filled",
+    }
+    return mapping.get(raw_status, f"unknown_{raw_status}")
+
+
+def _map_direction(raw_type: int) -> str:
+    """Map xtquant order_type to buy/sell."""
+    # xtconstant.STOCK_BUY = 23, STOCK_SELL = 24
+    if raw_type == 23:
+        return "buy"
+    if raw_type == 24:
+        return "sell"
+    return f"unknown_{raw_type}"
+
+
+def create_trader(
+    session_id: int,
+    qmt_userdata_path: str,
+    dispatcher: Optional[Callable[[dict], None]] = None,
+    account_name: str = "",
+):
     xttrader = _xttrader_module()
     trader = xttrader.XtQuantTrader(qmt_userdata_path, session_id)
+    if dispatcher:
+        callback = TraderCallback(dispatcher, account_name)
+        trader.register_callback(callback)
     trader.start()
     connect_rc = trader.connect()
     if connect_rc != 0:
