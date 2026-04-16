@@ -20,6 +20,20 @@ def fetch_ticks(
     )
 
 
+def fetch_kline(
+    transport: Transport,
+    code: str,
+    period: str,
+    start: str,
+    end: str,
+) -> list[dict]:
+    """Fetch kline bars. Returns list of dicts with 'close' field."""
+    return transport.get(
+        "/data/kline",
+        params={"code": code, "period": period, "start": start, "end": end},
+    )
+
+
 def fetch_tick_snapshot(transport: Transport, codes: list[str]) -> dict:
     """Fetch latest tick snapshot for one or more codes.
 

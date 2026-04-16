@@ -9,7 +9,7 @@ import click
 from miniqmt_cli.client.transport import Transport
 from miniqmt_cli.client_config import load_client_config
 
-from trading_analysis.datasource import fetch_tick_snapshot, fetch_ticks
+from trading_analysis.datasource import fetch_kline, fetch_tick_snapshot, fetch_ticks
 from trading_analysis.moneyflow import (
     MoneyFlowSummary,
     aggregate_moneyflow,
@@ -48,7 +48,8 @@ def cli():
 @click.option("--config", "config_path", default=None, help="Override client config path")
 @click.option("--live", is_flag=True, default=False, help="Real-time mode with Rich Live display")
 @click.option("--interval", default=10, type=int, help="Live refresh interval in seconds (default: 10)")
-def moneyflow(codes, date, start, end, fmt, thresholds, config_path, live, interval):
+@click.option("--signal", default=None, help='Signal expression, e.g. "main_net > 0 and price > ma20"')
+def moneyflow(codes, date, start, end, fmt, thresholds, config_path, live, interval, signal):
     """Compute tick-level money flow by tier."""
     if date is None:
         date = datetime.date.today().strftime("%Y%m%d")
@@ -57,7 +58,7 @@ def moneyflow(codes, date, start, end, fmt, thresholds, config_path, live, inter
     transport = Transport(cfg)
 
     if live:
-        _run_live(transport, list(codes), thresh, interval)
+        _run_live(transport, list(codes), thresh, interval, signal)
         return
 
     ranking = []
@@ -81,25 +82,76 @@ def moneyflow(codes, date, start, end, fmt, thresholds, config_path, live, inter
         click.echo(format_ranking(ranking))
 
 
+def _load_ma_values(transport: Transport, code: str, periods: set[int]) -> dict[str, float | None]:
+    """Fetch daily kline and compute required MAs for a code."""
+    if not periods:
+        return {}
+    max_period = max(periods)
+    # Fetch enough bars: max_period + some buffer
+    today = datetime.date.today()
+    start_date = today - datetime.timedelta(days=max_period * 2)
+    bars = fetch_kline(
+        transport, code, "1d",
+        start_date.strftime("%Y%m%d"),
+        today.strftime("%Y%m%d"),
+    )
+    closes = [b.get("close") for b in bars if b.get("close") is not None]
+
+    from trading_analysis.signals import compute_ma
+    result = {}
+    for p in periods:
+        ma_val = compute_ma(closes, p)
+        result[f"ma{p}"] = ma_val
+    return result
+
+
 def _run_live(
     transport: Transport,
     codes: list[str],
     thresholds: tuple[float, float, float],
     interval: int,
+    signal_expr: str | None,
 ) -> None:
     """Real-time polling mode using Rich Live display."""
     from rich.console import Console
     from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from trading_analysis.signals import evaluate, parse_required_mas
 
     console = Console()
 
-    # Per-code state: accumulated summary + last snapshot + snapshot count
+    # Parse signal expression and preload MAs
+    ma_cache: dict[str, dict[str, float | None]] = {}
+    required_mas: set[int] = set()
+    if signal_expr:
+        required_mas = parse_required_mas(signal_expr)
+        console.print(f"[bold]信号表达式:[/bold] {signal_expr}")
+        if required_mas:
+            console.print(f"[dim]加载均线: MA{', MA'.join(str(p) for p in sorted(required_mas))}...[/dim]")
+        for code in codes:
+            ma_cache[code] = _load_ma_values(transport, code, required_mas)
+            ma_parts = []
+            for p in sorted(required_mas):
+                key = f"ma{p}"
+                val = ma_cache[code].get(key)
+                ma_parts.append(f"MA{p}={'N/A' if val is None else f'{val:.2f}'}")
+            ma_str = ", ".join(ma_parts)
+            if ma_str:
+                console.print(f"  {code}: {ma_str}")
+        console.print()
+
+    # Per-code state
     state: dict[str, dict] = {}
     for code in codes:
         state[code] = {
             "summary": MoneyFlowSummary(),
             "last_snap": None,
             "snap_count": 0,
+            "last_price": None,
+            "signal_triggered": False,
         }
 
     multi = len(codes) > 1
@@ -109,7 +161,7 @@ def _run_live(
         try:
             all_snaps = fetch_tick_snapshot(transport, codes)
         except Exception:
-            return  # skip this cycle on error
+            return
 
         for code in codes:
             snap = all_snaps.get(code)
@@ -118,13 +170,13 @@ def _run_live(
 
             s = state[code]
             s["snap_count"] += 1
+            s["last_price"] = snap.get("lastPrice")
             prev = s["last_snap"]
             s["last_snap"] = snap
 
             if prev is None:
                 continue
 
-            # Compute delta between previous and current snapshot
             d_amount = snap.get("amount", 0) - prev.get("amount", 0)
             d_volume = snap.get("volume", 0) - prev.get("volume", 0)
             d_txn = snap.get("transactionNum", 0) - prev.get("transactionNum", 0)
@@ -160,17 +212,57 @@ def _run_live(
 
             s["summary"].stats["total_intervals"] += 1
 
+    def _check_signals() -> list[str]:
+        """Evaluate signal expression for each code. Returns list of alert messages."""
+        if not signal_expr:
+            return []
+        alerts = []
+        for code in codes:
+            s = state[code]
+            if s["last_price"] is None:
+                continue
+            variables: dict[str, float | None] = {
+                "main_net": s["summary"].main_force_net,
+                "retail_net": s["summary"].retail_net,
+                "price": s["last_price"],
+            }
+            variables.update(ma_cache.get(code, {}))
+            result = evaluate(signal_expr, variables)
+            was_triggered = s["signal_triggered"]
+            s["signal_triggered"] = result.triggered
+            if result.triggered and not was_triggered:
+                alerts.append(
+                    f"[bold red on white] >>> {code} 信号触发: {signal_expr} <<< [/bold red on white]"
+                )
+        return alerts
+
     def _build_display():
+        parts = []
         if multi:
             summaries = {
                 code: (state[code]["summary"], state[code]["snap_count"])
                 for code in codes
             }
-            return build_live_multi_table(summaries, interval)
+            parts.append(build_live_multi_table(summaries, interval))
         else:
             code = codes[0]
             s = state[code]
-            return build_live_table(code, s["summary"], s["snap_count"], interval)
+            parts.append(build_live_table(code, s["summary"], s["snap_count"], interval))
+
+        # Signal status line
+        if signal_expr:
+            triggered_codes = [c for c in codes if state[c]["signal_triggered"]]
+            if triggered_codes:
+                sig_text = Text(f"信号触发: {', '.join(triggered_codes)}", style="bold red")
+            else:
+                sig_text = Text(f"信号监控中: {signal_expr}", style="dim")
+            parts.append(sig_text)
+
+        if len(parts) == 1:
+            return parts[0]
+
+        from rich.console import Group
+        return Group(*parts)
 
     # Initial poll
     _poll_and_update()
@@ -180,11 +272,15 @@ def _run_live(
             while True:
                 time.sleep(interval)
                 _poll_and_update()
+                alerts = _check_signals()
                 live.update(_build_display())
+                # Print alerts outside Live so they persist in scrollback
+                for alert in alerts:
+                    live.console.print(alert)
     except KeyboardInterrupt:
         pass
 
-    # Print final summary on exit
+    # Final summary
     console.print("\n[bold]-- 最终统计 --[/bold]")
     for code in codes:
         s = state[code]
@@ -198,3 +294,9 @@ def _run_live(
                 s["snap_count"],
             )
         )
+    if signal_expr:
+        triggered = [c for c in codes if state[c]["signal_triggered"]]
+        if triggered:
+            console.print(f"\n[bold red]信号已触发: {', '.join(triggered)}[/bold red]")
+        else:
+            console.print(f"\n[dim]信号未触发: {signal_expr}[/dim]")
