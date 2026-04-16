@@ -60,3 +60,28 @@ class TestComputeDeltas:
         ]
         deltas = compute_deltas(snaps)
         assert deltas[0]["avg_amount"] == 100_000
+
+
+from trading_analysis.moneyflow import classify_direction
+
+
+class TestClassifyDirection:
+    def test_active_buy(self):
+        delta = {"last_price": 10.2, "ask0": 10.1, "bid0": 9.9}
+        assert classify_direction(delta) == "buy"
+
+    def test_active_sell(self):
+        delta = {"last_price": 9.8, "ask0": 10.1, "bid0": 9.9}
+        assert classify_direction(delta) == "sell"
+
+    def test_neutral(self):
+        delta = {"last_price": 10.0, "ask0": 10.1, "bid0": 9.9}
+        assert classify_direction(delta) == "neutral"
+
+    def test_equal_to_ask_is_buy(self):
+        delta = {"last_price": 10.1, "ask0": 10.1, "bid0": 9.9}
+        assert classify_direction(delta) == "buy"
+
+    def test_equal_to_bid_is_sell(self):
+        delta = {"last_price": 9.9, "ask0": 10.1, "bid0": 9.9}
+        assert classify_direction(delta) == "sell"

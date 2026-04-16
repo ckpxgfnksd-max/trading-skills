@@ -26,3 +26,13 @@ def compute_deltas(snapshots: list[dict]) -> list[dict]:
             "bid0": curr["bidPrice"][0],
         })
     return deltas
+
+
+def classify_direction(delta: dict) -> str:
+    """Classify a delta interval as buy, sell, or neutral."""
+    price = delta["last_price"]
+    if price >= delta["ask0"]:
+        return "buy"
+    if price <= delta["bid0"]:
+        return "sell"
+    return "neutral"
