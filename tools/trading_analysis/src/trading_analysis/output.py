@@ -102,6 +102,90 @@ def format_ranking(results: list[tuple[str, float]]) -> str:
     return buf.getvalue()
 
 
+def build_live_table(
+    code: str,
+    summary: MoneyFlowSummary,
+    snapshot_count: int,
+    interval: int,
+) -> Table:
+    """Build a Rich Table object for use with rich.live.Live."""
+    table = Table(
+        title=f"{code}  实时资金流向  (每{interval}秒刷新, Ctrl+C 退出)",
+        show_header=True,
+        header_style="bold cyan",
+        width=72,
+    )
+    table.add_column("档位", width=10)
+    table.add_column("买入(万)", justify="right", width=12)
+    table.add_column("卖出(万)", justify="right", width=12)
+    table.add_column("净流入(万)", justify="right", width=12)
+    table.add_column("方向", width=10)
+
+    for name in TIER_NAMES[::-1]:
+        b = summary.tiers[name]
+        table.add_row(
+            TIER_LABELS[name],
+            _wan(b.buy),
+            _wan(b.sell),
+            f"{'+' if b.net >= 0 else ''}{_wan(b.net)}",
+            _net_label(b.net),
+        )
+
+    table.add_section()
+    table.add_row(
+        "主力合计", "", "",
+        f"{'+' if summary.main_force_net >= 0 else ''}{_wan(summary.main_force_net)}",
+        _net_label(summary.main_force_net),
+    )
+    table.add_row(
+        "散户合计", "", "",
+        f"{'+' if summary.retail_net >= 0 else ''}{_wan(summary.retail_net)}",
+        _net_label(summary.retail_net),
+    )
+
+    st = summary.stats
+    table.caption = (
+        f"快照 {snapshot_count} | "
+        f"区间 {st['total_intervals']} | "
+        f"买 {st['buy_count']} | "
+        f"卖 {st['sell_count']} | "
+        f"中性 {st['neutral_count']}"
+    )
+    return table
+
+
+def build_live_multi_table(
+    summaries: dict[str, tuple[MoneyFlowSummary, int]],
+    interval: int,
+) -> Table:
+    """Build a compact multi-stock live table."""
+    table = Table(
+        title=f"实时资金流向  (每{interval}秒刷新, Ctrl+C 退出)",
+        show_header=True,
+        header_style="bold cyan",
+        width=72,
+    )
+    table.add_column("代码", width=12)
+    table.add_column("主力净流入(万)", justify="right", width=16)
+    table.add_column("散户净流入(万)", justify="right", width=16)
+    table.add_column("方向", width=10)
+
+    ranked = sorted(
+        summaries.items(),
+        key=lambda x: x[1][0].main_force_net,
+        reverse=True,
+    )
+    for code, (summary, _count) in ranked:
+        mf = summary.main_force_net
+        table.add_row(
+            code,
+            f"{'+' if mf >= 0 else ''}{_wan(mf)}",
+            f"{'+' if summary.retail_net >= 0 else ''}{_wan(summary.retail_net)}",
+            _net_label(mf),
+        )
+    return table
+
+
 def format_json(
     code: str,
     summary: MoneyFlowSummary,

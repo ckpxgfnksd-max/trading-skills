@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from trading_analysis.datasource import fetch_ticks
+from trading_analysis.datasource import fetch_tick_snapshot, fetch_ticks
 
 
 def _make_transport(return_value):
@@ -31,4 +31,29 @@ class TestFetchTicks:
         t.get.assert_called_once_with(
             "/data/ticks",
             params={"code": "000001.SZ", "start": "20260415100000", "end": "20260415113000"},
+        )
+
+
+class TestFetchTickSnapshot:
+    def test_single_code(self):
+        data = {"002028.SZ": {"lastPrice": 210.0, "volume": 100}}
+        t = _make_transport(data)
+        result = fetch_tick_snapshot(t, ["002028.SZ"])
+        assert result == data
+        t.get.assert_called_once_with(
+            "/data/tick",
+            params=[("code", "002028.SZ")],
+        )
+
+    def test_multiple_codes(self):
+        data = {
+            "002028.SZ": {"lastPrice": 210.0},
+            "000859.SZ": {"lastPrice": 9.6},
+        }
+        t = _make_transport(data)
+        result = fetch_tick_snapshot(t, ["002028.SZ", "000859.SZ"])
+        assert result == data
+        t.get.assert_called_once_with(
+            "/data/tick",
+            params=[("code", "002028.SZ"), ("code", "000859.SZ")],
         )
