@@ -169,13 +169,13 @@ For day-to-day code updates after initial setup:
 
 ```bash
 # Deploy script (uses env from wizard state)
-WIN_HOST=oopslink@10.211.55.3 WIN_REPO=C:/apps/trading-skills bash scripts/deploy.sh
+WIN_HOST=<user>@<windows-host> WIN_REPO=C:/apps/trading-skills bash scripts/deploy.sh
 ```
 
 Restart the daemon on Windows:
 
 ```bash
-ssh oopslink@10.211.55.3 "schtasks /run /tn MiniqmtDaemon"
+ssh <user>@<windows-host> "schtasks /run /tn MiniqmtDaemon"
 ```
 
 ## SSH Tunnel
@@ -184,7 +184,7 @@ The tunnel is the lifeline between Mac CLI and Windows daemon.
 
 ```bash
 # Manual tunnel (foreground)
-ssh -N -L 8765:127.0.0.1:8765 oopslink@10.211.55.3
+ssh -N -L 8765:127.0.0.1:8765 <user>@<windows-host>
 
 # Persistent tunnel via autossh + launchd (setup wizard can generate the plist)
 launchctl load ~/Library/LaunchAgents/com.miniqmt.tunnel.plist
