@@ -45,6 +45,8 @@ def get_market_data_ex(
     fields: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     xtdata = _xtdata()
+    for code in codes:
+        xtdata.download_history_data(code, period, start_time, end_time)
     return xtdata.get_market_data_ex(
         field_list=fields or [],
         stock_list=codes,
