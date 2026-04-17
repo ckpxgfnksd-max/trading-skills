@@ -23,7 +23,7 @@ class AccountConfig:
     account_id: str
     account_type: str = "STOCK"
     requires_confirm_live: bool = False
-    risk: Optional["RiskConfig"] = None
+    risk: Optional[RiskConfig] = None
 
     @property
     def last4(self) -> str:

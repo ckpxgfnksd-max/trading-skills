@@ -103,9 +103,14 @@ def test_effective_risk_field_level_override(tmp_path):
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))
-    eff = cfg.effective_risk("live")
-    assert eff.max_daily_loss == 10000  # override
-    assert eff.max_position_pct == 30.0  # inherited from global
+    # Assert the override was materialized at LOAD time on the per-account dataclass
+    assert cfg.accounts["live"].risk is not None
+    assert cfg.accounts["live"].risk.max_daily_loss == 10000
+    assert cfg.accounts["live"].risk.max_position_pct == 30.0
+    # Stronger invariant: mutating global after load does not affect per-account
+    cfg.risk.max_position_pct = 999.0
+    assert cfg.effective_risk("live").max_position_pct == 30.0
+    assert cfg.effective_risk("live").max_daily_loss == 10000
 
 
 def test_risk_state_path_default():
@@ -125,3 +130,25 @@ def test_risk_disabled_flag(tmp_path):
     )
     cfg = load_server_config(str(p))
     assert cfg.effective_risk("sim").enabled is False
+
+
+def test_risk_state_path_override(tmp_path):
+    from miniqmt_cli.server_config import load_server_config
+    p = tmp_path / "server.toml"
+    p.write_text(
+        '[server]\nqmt_path = "/tmp"\n'
+        '[risk]\nstate_path = "/var/lib/miniqmt/state.json"\n',
+        encoding="utf-8",
+    )
+    cfg = load_server_config(str(p))
+    assert str(cfg.resolved_risk_state_path()) == "/var/lib/miniqmt/state.json"
+
+
+def test_resolved_risk_state_path_expands_user(tmp_path):
+    from pathlib import Path
+    from miniqmt_cli.server_config import ServerConfig
+    cfg = ServerConfig()
+    expanded = cfg.resolved_risk_state_path()
+    # Should be an absolute path (no leading ~)
+    assert not str(expanded).startswith("~")
+    assert expanded == Path("~/.miniqmt_cli/risk_state.json").expanduser()
