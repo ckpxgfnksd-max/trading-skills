@@ -84,6 +84,7 @@ def reset_cmd(ctx, account, note, confirm_live, yes):
     try:
         status_body = t.get("/risk/status", params={"account": account})
     except click.ClickException:
+        # preserve daemon-side error messages (e.g. 400 confirm_live_last4); do not wrap
         raise
     except Exception as e:
         raise RiskReject("STATUS_FAILED", str(e))
@@ -106,6 +107,7 @@ def reset_cmd(ctx, account, note, confirm_live, yes):
     try:
         resp = t.post("/risk/reset", body=body)
     except click.ClickException:
+        # preserve daemon-side error messages (e.g. 400 confirm_live_last4); do not wrap
         raise
     except Exception as e:
         raise RiskReject("RESET_FAILED", str(e))
