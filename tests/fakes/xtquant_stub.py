@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 
 class FakeXtData:
@@ -81,6 +81,12 @@ class FakeTrader:
         self.cancels: List[int] = []
         self._next_seq = 100
         self.should_fail_order = False
+        self.callback = None
+        # Overridable returns for risk tests
+        self.asset_override: Optional[dict] = None
+        self.positions_override: Optional[list] = None
+        self.open_orders_override: Optional[list] = None
+        self.should_fail_asset_query = False
 
     def register_callback(self, callback):
         self.callback = callback
@@ -113,18 +119,48 @@ class FakeTrader:
         return 0
 
     def query_stock_asset(self, acc):
+        if self.should_fail_asset_query:
+            raise RuntimeError("fake asset query failure")
+        if self.asset_override is not None:
+            d = dict(self.asset_override)
+            d.setdefault("account_id", acc.account_id)
+            return d
         return {"cash": 100000.0, "total_asset": 200000.0, "account_id": acc.account_id}
 
     def query_stock_positions(self, acc):
+        if self.positions_override is not None:
+            return [dict(p) for p in self.positions_override]
         return [
-            {"code": "000001.SZ", "volume": 100, "avg_price": 12.0, "account": acc.account_id}
+            {"stock_code": "000001.SZ", "volume": 100, "avg_price": 12.0,
+             "market_value": 1234.0, "account": acc.account_id}
         ]
 
     def query_stock_orders(self, acc):
+        if self.open_orders_override is not None:
+            return [dict(o) for o in self.open_orders_override]
         return list(self.orders_placed)
 
     def query_stock_trades(self, acc):
         return []
+
+    # Test helpers to drive xtquant callbacks
+    def fire_order_event(self, **order_fields):
+        class _FakeOrder:
+            pass
+        o = _FakeOrder()
+        for k, v in order_fields.items():
+            setattr(o, k, v)
+        if self.callback and hasattr(self.callback, "on_order_event"):
+            self.callback.on_order_event(o)
+
+    def fire_trade_event(self, **trade_fields):
+        class _FakeTrade:
+            pass
+        t = _FakeTrade()
+        for k, v in trade_fields.items():
+            setattr(t, k, v)
+        if self.callback and hasattr(self.callback, "on_trade_event"):
+            self.callback.on_trade_event(t)
 
 
 class FakeXtTrader:

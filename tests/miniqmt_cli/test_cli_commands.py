@@ -100,7 +100,7 @@ def test_account_position(cli_env, fake_xtquant):
     )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data[0]["code"] == "000001.SZ"
+    assert data[0]["stock_code"] == "000001.SZ"
 
 
 def test_order_buy_dry_run_exits_3(cli_env, server_cfg, fake_xtquant):

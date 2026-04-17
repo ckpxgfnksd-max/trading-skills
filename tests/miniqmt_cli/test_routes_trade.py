@@ -43,7 +43,7 @@ def test_account_meta_unknown(client):
 def test_positions_known_account(client):
     resp = client.get("/trade/positions", params={"account": "sim"})
     assert resp.status_code == 200
-    assert resp.json()[0]["code"] == "000001.SZ"
+    assert resp.json()[0]["stock_code"] == "000001.SZ"
 
 
 def test_positions_whitelist_bypass(client):
