@@ -162,6 +162,19 @@ account_type = "STOCK"
 
 [audit]
 log_path = "~/.miniqmt_cli/orders.jsonl"
+
+[risk]
+# Global risk defaults. Per-account override via [accounts.<name>.risk]
+enabled = true
+max_daily_loss = 50000        # yuan
+max_position_pct = 30         # % of total asset per single name
+max_orders_per_minute = 10
+max_positions = 10
+# state_path = "~/.miniqmt_cli/risk_state.json"   # breaker + baseline store
+
+# [accounts.live.risk]
+# max_daily_loss = 10000
+# max_position_pct = 20
 """
 
 
