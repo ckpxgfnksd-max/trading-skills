@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from miniqmt_cli.server.routes_data import router as data_router
+from miniqmt_cli.server.routes_risk import router as risk_router
 from miniqmt_cli.server.routes_stream import router as stream_router
 from miniqmt_cli.server.routes_trade import router as trade_router
 from miniqmt_cli.server.session import SessionManager
@@ -11,11 +12,12 @@ from miniqmt_cli.server_config import ServerConfig
 
 
 def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
-    app = FastAPI(title="miniqmt-cli daemon", version="0.1.0")
+    app = FastAPI(title="miniqmt-cli daemon", version="0.2.0")
     app.state.session = SessionManager(cfg, dry_run=dry_run)
     app.include_router(data_router)
     app.include_router(trade_router)
     app.include_router(stream_router)
+    app.include_router(risk_router)
 
     @app.get("/version")
     def version():

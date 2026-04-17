@@ -30,6 +30,7 @@ def server_cfg(tmp_path) -> ServerConfig:
         session_id=42,
         audit_log_path=str(tmp_path / "orders.jsonl"),
         idempotency_ttl_seconds=60,
+        risk_state_path=str(tmp_path / "risk_state.json"),
     )
     cfg.accounts["sim"] = AccountConfig(
         name="sim", account_id="55001234", account_type="STOCK",
