@@ -109,10 +109,6 @@ def _capture_is_imprecise() -> bool:
     return now >= _time(9, 30)
 
 
-SNAPSHOT_TTL = 30.0
-SNAPSHOT_HARD_EXPIRY = 300.0
-
-
 class SnapshotStale(RuntimeError):
     """Raised when snapshot can't be refreshed and hard expiry is exceeded."""
 
@@ -228,12 +224,13 @@ class RiskManager:
         Locking discipline: NEVER hold self._lock during xtquant queries
         (they block for 50-400ms). Lock only for the dict assignment.
         """
+        eff = self._cfg.effective_risk(account_name)
         snap = self._snapshots.get(account_name)
         now = time.monotonic()
         needs_refresh = (
             snap is None
             or snap.stale
-            or (now - snap.refreshed_at) > SNAPSHOT_TTL
+            or (now - snap.refreshed_at) > eff.snapshot_ttl_seconds
         )
         if not needs_refresh:
             return snap
@@ -241,7 +238,7 @@ class RiskManager:
         try:
             new_snap = self._do_refresh(account_name)
         except Exception as e:
-            if snap is not None and (now - snap.refreshed_at) <= SNAPSHOT_HARD_EXPIRY:
+            if snap is not None and (now - snap.refreshed_at) <= eff.snapshot_hard_expiry_seconds:
                 log.warning(
                     "snapshot refresh failed for %s (%s); using stale snapshot age=%.1fs",
                     account_name, e, now - snap.refreshed_at,

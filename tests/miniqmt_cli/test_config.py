@@ -152,3 +152,18 @@ def test_resolved_risk_state_path_expands_user(tmp_path):
     # Should be an absolute path (no leading ~)
     assert not str(expanded).startswith("~")
     assert expanded == Path("~/.miniqmt_cli/risk_state.json").expanduser()
+
+
+def test_risk_config_snapshot_timings_configurable(tmp_path):
+    from miniqmt_cli.server_config import load_server_config
+    p = tmp_path / "server.toml"
+    p.write_text(
+        '[server]\nqmt_path = "/tmp"\n'
+        '[risk]\nsnapshot_ttl_seconds = 10\nsnapshot_hard_expiry_seconds = 120\n'
+        '[accounts.sim]\naccount_id = "55001234"\n',
+        encoding="utf-8",
+    )
+    cfg = load_server_config(str(p))
+    eff = cfg.effective_risk("sim")
+    assert eff.snapshot_ttl_seconds == 10.0
+    assert eff.snapshot_hard_expiry_seconds == 120.0

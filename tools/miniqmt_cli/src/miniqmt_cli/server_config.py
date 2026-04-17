@@ -15,6 +15,8 @@ class RiskConfig:
     max_position_pct: float = 30.0
     max_orders_per_minute: int = 10
     max_positions: int = 10
+    snapshot_ttl_seconds: float = 30.0
+    snapshot_hard_expiry_seconds: float = 300.0
 
 
 @dataclass
@@ -93,6 +95,8 @@ def _parse_risk(raw: dict, base: RiskConfig) -> RiskConfig:
         max_position_pct=float(raw["max_position_pct"]) if "max_position_pct" in raw else base.max_position_pct,
         max_orders_per_minute=int(raw["max_orders_per_minute"]) if "max_orders_per_minute" in raw else base.max_orders_per_minute,
         max_positions=int(raw["max_positions"]) if "max_positions" in raw else base.max_positions,
+        snapshot_ttl_seconds=float(raw["snapshot_ttl_seconds"]) if "snapshot_ttl_seconds" in raw else base.snapshot_ttl_seconds,
+        snapshot_hard_expiry_seconds=float(raw["snapshot_hard_expiry_seconds"]) if "snapshot_hard_expiry_seconds" in raw else base.snapshot_hard_expiry_seconds,
     )
 
 
@@ -170,6 +174,8 @@ max_daily_loss = 50000        # yuan
 max_position_pct = 30         # % of total asset per single name
 max_orders_per_minute = 10
 max_positions = 10
+# snapshot_ttl_seconds = 30          # cache age before refresh
+# snapshot_hard_expiry_seconds = 300 # stale snapshot tolerance before SNAPSHOT_STALE
 # state_path = "~/.miniqmt_cli/risk_state.json"   # breaker + baseline store
 
 # [accounts.live.risk]
