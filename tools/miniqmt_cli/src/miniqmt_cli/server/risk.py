@@ -132,6 +132,26 @@ class PendingEntry:
     by_order_id: Dict[int, Dict[str, float]] = field(default_factory=dict)
 
 
+@dataclass
+class RiskDecision:
+    allow: bool
+    reject_code: Optional[str] = None
+    reject_detail: Optional[str] = None
+
+
+def _get_last_price(code: str) -> Optional[float]:
+    """Fetch last_price via xtdata get_full_tick. Returns None if unavailable."""
+    try:
+        from miniqmt_cli.server import xtdata_adapter
+        ticks = xtdata_adapter.get_full_tick([code])
+        entry = ticks.get(code, {})
+        lp = entry.get("lastPrice") or entry.get("last_price")
+        return float(lp) if lp else None
+    except Exception as e:
+        log.warning("get_last_price for %s failed: %s", code, e)
+        return None
+
+
 class RiskManager:
     def __init__(
         self,
@@ -325,3 +345,203 @@ class RiskManager:
                     if entry.buy_volume <= 0:
                         del codes[code]
                     break
+
+    def trip_breaker(self, account: str, reason: str) -> None:
+        with self._lock:
+            state = self._state.accounts.get(account)
+            if state is None:
+                log.error("cannot trip breaker for %s: no baseline state", account)
+                return
+            state.breaker_tripped = True
+            state.breaker_reason = reason
+            state.breaker_tripped_at = _iso_now()
+            self._state.save()
+        snap = self._snapshots.get(account)
+        self._audit.append(
+            phase="risk_breaker_trip",
+            account=account,
+            reason=reason,
+            baseline_total_asset=state.baseline_total_asset,
+            current_total_asset=snap.total_asset if snap else None,
+            daily_pnl=(snap.total_asset - state.baseline_total_asset) if snap else None,
+        )
+        log.warning("RISK BREAKER TRIPPED for %s: %s", account, reason)
+
+    def reset_breaker(self, account: str, operator_note: str) -> dict:
+        with self._lock:
+            state = self._state.accounts.get(account)
+            if state is None or not state.breaker_tripped:
+                raise ValueError("breaker is not tripped")
+            previous_reason = state.breaker_reason
+            reset_at = _iso_now()
+            state.reset_history.append({
+                "reset_at": reset_at,
+                "previous_reason": previous_reason,
+                "operator_note": operator_note,
+            })
+            state.breaker_tripped = False
+            state.breaker_reason = None
+            state.breaker_tripped_at = None
+            self._state.save()
+        self._audit.append(
+            phase="risk_breaker_reset",
+            account=account,
+            previous_reason=previous_reason,
+            operator_note=operator_note,
+        )
+        return {"account": account, "previous_reason": previous_reason, "reset_at": reset_at}
+
+    def check_order(
+        self, account: str, side: str, code: str, volume: int,
+        price: float, order_type: str = "limit",
+    ) -> RiskDecision:
+        eff = self._cfg.effective_risk(account)
+        if not eff.enabled:
+            return RiskDecision(allow=True)
+
+        def _breaker_check() -> RiskDecision:
+            state = self._state.accounts.get(account)
+            if state and state.breaker_tripped:
+                if side == "sell":
+                    pos = self._safe_snapshot(account).positions_by_code.get(code, {})
+                    if int(pos.get("volume", 0)) >= volume:
+                        return RiskDecision(allow=True)
+                return RiskDecision(
+                    allow=False, reject_code="BREAKER_TRIPPED",
+                    reject_detail=f"breaker tripped: {state.breaker_reason}",
+                )
+            return RiskDecision(allow=True)
+
+        decision = _breaker_check()
+        if not decision.allow:
+            return decision
+
+        try:
+            self.ensure_baseline(account)
+        except BaselineUnavailable as e:
+            return RiskDecision(
+                allow=False, reject_code="BASELINE_PENDING",
+                reject_detail=str(e),
+            )
+
+        try:
+            snap = self.get_snapshot(account)
+        except SnapshotStale as e:
+            return RiskDecision(
+                allow=False, reject_code="SNAPSHOT_STALE",
+                reject_detail=str(e),
+            )
+
+        if account not in self._pending_rebuilt:
+            self._rebuild_pending(account)
+            self._pending_rebuilt.add(account)
+
+        state = self._state.accounts[account]
+        daily_pnl = snap.total_asset - state.baseline_total_asset
+        if daily_pnl < -eff.max_daily_loss:
+            self.trip_breaker(
+                account, f"daily_loss {daily_pnl:.2f} < -{eff.max_daily_loss}",
+            )
+            return _breaker_check()
+
+        window = self._order_window.setdefault(account, deque())
+        now = time.monotonic()
+        while window and now - window[0] > 60.0:
+            window.popleft()
+        if len(window) >= eff.max_orders_per_minute:
+            return RiskDecision(
+                allow=False, reject_code="FREQUENCY",
+                reject_detail=f"{len(window)} orders in last 60s >= {eff.max_orders_per_minute}",
+            )
+
+        if side == "buy":
+            held = {
+                c for c, p in snap.positions_by_code.items()
+                if int(p.get("volume", 0)) > 0
+            }
+            pending_codes = set(self._pending.get(account, {}).keys())
+            tracked = held | pending_codes
+            if code not in tracked and len(tracked) >= eff.max_positions:
+                return RiskDecision(
+                    allow=False, reject_code="MAX_POSITIONS",
+                    reject_detail=f"holding {len(tracked)} >= {eff.max_positions} (new: {code})",
+                )
+
+            if order_type == "limit":
+                est_price = float(price)
+            else:
+                last = _get_last_price(code)
+                if (not price or price <= 0) and (last is None or last <= 0):
+                    return RiskDecision(
+                        allow=False, reject_code="PRICE_UNAVAILABLE",
+                        reject_detail=f"no price for market order on {code}",
+                    )
+                est_price = max(float(price or 0), float(last or 0))
+            existing_mv = float(
+                snap.positions_by_code.get(code, {}).get("market_value", 0.0)
+            )
+            pending_amount = self._pending.get(account, {}).get(
+                code, PendingEntry()
+            ).buy_amount
+            est_new = existing_mv + pending_amount + volume * est_price
+            ratio = est_new / snap.total_asset if snap.total_asset else float("inf")
+            if ratio > eff.max_position_pct / 100.0:
+                return RiskDecision(
+                    allow=False, reject_code="POSITION_PCT",
+                    reject_detail=(
+                        f"est MV {est_new:.2f} / {snap.total_asset:.2f} = "
+                        f"{ratio*100:.2f}% > {eff.max_position_pct}%"
+                    ),
+                )
+
+        return RiskDecision(allow=True)
+
+    def _safe_snapshot(self, account: str) -> AccountSnapshot:
+        try:
+            return self.get_snapshot(account)
+        except Exception:
+            return AccountSnapshot(
+                total_asset=0.0, positions_by_code={},
+                refreshed_at=time.monotonic(), stale=True,
+            )
+
+    def _rebuild_pending(self, account: str) -> None:
+        """On first check per account, replay open buys from xttrader."""
+        try:
+            trader, acc = self._xttrader_ctx(account)
+            from miniqmt_cli.server import xttrader_adapter
+            orders = xttrader_adapter.query_stock_orders(trader, acc)
+        except Exception as e:
+            log.warning("pending rebuild for %s failed: %s", account, e)
+            self._audit.append(
+                phase="risk_pending_rebuild",
+                account=account,
+                rebuilt_orders_count=0,
+                error=str(e),
+            )
+            return
+
+        replayed = 0
+        open_statuses = {"submitted", "confirmed", "partially_filled"}
+        for o in orders or []:
+            status = str(o.get("order_status_str") or o.get("status") or "").lower()
+            if status and status not in open_statuses:
+                continue
+            side = o.get("side") or ("buy" if o.get("direction") == 23 else None)
+            if side != "buy":
+                continue
+            code = o.get("stock_code") or o.get("code")
+            order_id = int(o.get("order_id") or o.get("seq") or 0)
+            volume = int(o.get("order_volume") or o.get("volume") or 0) - int(
+                o.get("traded_volume") or 0
+            )
+            price = float(o.get("price") or o.get("order_price") or 0.0)
+            if volume <= 0 or not code or order_id == 0:
+                continue
+            self.record_accepted(account, "buy", code, volume, price, order_id)
+            replayed += 1
+        self._audit.append(
+            phase="risk_pending_rebuild",
+            account=account,
+            rebuilt_orders_count=replayed,
+        )

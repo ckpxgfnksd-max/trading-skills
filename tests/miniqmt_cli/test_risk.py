@@ -372,3 +372,197 @@ def test_unknown_account_event_ignored(tmp_path):
     rm = RiskManager(cfg, audit, _FakeTraderCtx())
     rm.on_trade_event({"type": "trade", "account": "ghost", "order_id": 1})
     # Should not raise
+
+
+def test_disabled_config_allows_all(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, enabled=False, max_daily_loss=1)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    rm = RiskManager(cfg, audit, ctx)
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is True
+
+
+def test_check_order_daily_loss_trips_breaker(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_daily_loss=100.0)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    ctx.trader.asset_override = {"total_asset": 800.0}
+    if "sim" in rm._snapshots:
+        rm._snapshots["sim"].stale = True
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "BREAKER_TRIPPED"
+    assert rm._state.accounts["sim"].breaker_tripped is True
+
+
+def test_check_order_breaker_blocks_buy(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    rm.trip_breaker("sim", reason="manual")
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "BREAKER_TRIPPED"
+
+
+def test_check_order_breaker_allows_sell_within_position(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    ctx.trader.positions_override = [
+        {"stock_code": "000001.SZ", "volume": 500, "market_value": 5000.0}
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    rm.trip_breaker("sim", reason="manual")
+    d = rm.check_order("sim", "sell", "000001.SZ", 400, 10.0)
+    assert d.allow is True
+
+
+def test_check_order_breaker_rejects_oversell(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    ctx.trader.positions_override = [
+        {"stock_code": "000001.SZ", "volume": 500, "market_value": 5000.0}
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    rm.trip_breaker("sim", reason="manual")
+    d = rm.check_order("sim", "sell", "000001.SZ", 600, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "BREAKER_TRIPPED"
+
+
+def test_check_order_frequency_limit(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_orders_per_minute=3)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    for i in range(3):
+        d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+        assert d.allow is True
+        rm.record_accepted("sim", "buy", "000001.SZ", 100, 10.0, order_id=300 + i)
+    d4 = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d4.allow is False
+    assert d4.reject_code == "FREQUENCY"
+
+
+def test_check_order_frequency_window_slides(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_orders_per_minute=2)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    t = [1000.0]
+    monkeypatch.setattr(risk_mod.time, "monotonic", lambda: t[0])
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    rm.record_accepted("sim", "buy", "000001.SZ", 100, 10.0, order_id=1)
+    rm.record_accepted("sim", "buy", "000001.SZ", 100, 10.0, order_id=2)
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.reject_code == "FREQUENCY"
+    t[0] = 1061.0
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is True
+
+
+def test_check_order_max_positions_new_code(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_positions=2)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    ctx.trader.positions_override = [
+        {"stock_code": "000001.SZ", "volume": 100, "market_value": 1000},
+        {"stock_code": "600000.SH", "volume": 100, "market_value": 1000},
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    d = rm.check_order("sim", "buy", "000002.SZ", 100, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "MAX_POSITIONS"
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is True
+
+
+def test_check_order_position_pct_limit(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_position_pct=10.0)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    ctx.trader.positions_override = []
+    rm = RiskManager(cfg, audit, ctx)
+    d = rm.check_order("sim", "buy", "000001.SZ", 11, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "POSITION_PCT"
+    d = rm.check_order("sim", "buy", "000001.SZ", 10, 10.0)
+    assert d.allow is True
+
+
+def test_check_order_position_pct_includes_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_position_pct=10.0)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    ctx.trader.positions_override = []
+    rm = RiskManager(cfg, audit, ctx)
+    d1 = rm.check_order("sim", "buy", "000001.SZ", 5, 10.0)
+    assert d1.allow is True
+    rm.record_accepted("sim", "buy", "000001.SZ", 5, 10.0, order_id=1)
+    d2 = rm.check_order("sim", "buy", "000001.SZ", 6, 10.0)
+    assert d2.allow is False
+    assert d2.reject_code == "POSITION_PCT"
+
+
+def test_check_order_market_order_uses_last_price(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_position_pct=10.0)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    ctx.trader.positions_override = []
+    rm = RiskManager(cfg, audit, ctx)
+    monkeypatch.setattr(
+        risk_mod, "_get_last_price",
+        lambda code: 10.0 if code == "000001.SZ" else None,
+    )
+    d = rm.check_order("sim", "buy", "000001.SZ", 11, 0.0, order_type="market")
+    assert d.allow is False
+    assert d.reject_code == "POSITION_PCT"
+
+
+def test_check_order_market_order_no_price_rejects(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    ctx.trader.positions_override = []
+    rm = RiskManager(cfg, audit, ctx)
+    monkeypatch.setattr(risk_mod, "_get_last_price", lambda code: None)
+    d = rm.check_order("sim", "buy", "000001.SZ", 10, 0.0, order_type="market")
+    assert d.allow is False
+    assert d.reject_code == "PRICE_UNAVAILABLE"
