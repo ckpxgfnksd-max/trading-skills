@@ -38,6 +38,13 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
             return {"state": "daemon_up_xtquant_missing", "error": str(e)}
         if sess.trader_logged_in_count() == 0:
             return {"state": "daemon_up_no_trader"}
+        # Baseline pending: trader is up but some configured account hasn't captured baseline
+        pending_accounts = sess.risk.baseline_pending_accounts(list(sess.cfg.accounts.keys()))
+        if pending_accounts:
+            return {
+                "state": "daemon_up_baseline_pending",
+                "accounts_pending": pending_accounts,
+            }
         return {"state": "ready"}
 
     return app

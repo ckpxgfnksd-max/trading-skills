@@ -152,3 +152,29 @@ def test_health_no_breaker_when_reset(client, fake_xtquant):
     resp = client.get("/health")
     body = resp.json()
     assert body["state"] != "risk_breaker_tripped"
+
+
+def test_health_reports_baseline_pending(client, fake_xtquant):
+    """After a trader logs in but before baseline captured, /health reports pending."""
+    # Force trader login via a positions query (doesn't capture baseline)
+    r = client.get("/trade/positions", params={"account": "sim"})
+    assert r.status_code == 200
+    # At this point no risk state exists for sim or live
+    resp = client.get("/health")
+    body = resp.json()
+    assert body["state"] == "daemon_up_baseline_pending"
+    # Both accounts should be listed as pending
+    assert "sim" in body["accounts_pending"]
+    assert "live" in body["accounts_pending"]
+
+
+def test_health_ready_after_all_baselines_captured(client, fake_xtquant):
+    """Once all accounts have captured baseline, /health is ready."""
+    # Place an order on each account to trigger baseline capture
+    from tests.miniqmt_cli.test_routes_trade import _body
+    client.post("/trade/order", json=_body(account="sim", client_req_id="req-hb1"))
+    client.post("/trade/order", json=_body(
+        account="live", confirm_live_last4="1234", client_req_id="req-hb2",
+    ))
+    resp = client.get("/health")
+    assert resp.json()["state"] == "ready"

@@ -430,6 +430,18 @@ class RiskManager:
                 if s.breaker_tripped
             ]
 
+    def baseline_pending_accounts(self, account_names: List[str]) -> List[str]:
+        """Return accounts missing today's baseline in the state file.
+
+        Lock-protected read, safe to call while baseline capture is in flight.
+        """
+        today = _today_str()
+        with self._lock:
+            return [
+                name for name in account_names
+                if (s := self._state.accounts.get(name)) is None or s.trade_date != today
+            ]
+
     def snapshot_status(self, account: str) -> dict:
         """Return a consistent read-only snapshot of risk state for an account.
 
