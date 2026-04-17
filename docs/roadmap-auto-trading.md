@@ -49,6 +49,8 @@ daemon 端需要:
 
 **目标**: 防止策略失控导致重大损失
 
+**状态**: 已完成 (v0.2.0, 2026-04-17)
+
 ### 2.1 daemon 端风控 (miniqmt-cli server)
 
 在 `/trade/order` 请求管道中插入风控检查，独立于 CLI 端守卫:
@@ -247,7 +249,7 @@ trading-analysis report --date 20260417
 | M0: 数据通道 | -- | miniqmt-cli v0.1.0 | **已完成** |
 | M1: 资金分析 | -- | trading-analysis v0.1.0 (moneyflow + live + signal) | **已完成** |
 | M2: 订单闭环 | Phase 1 | 订单状态推送 + 成交反馈 | 待开发 |
-| M3: 安全底线 | Phase 2 | 风控层 + 熔断 | 待开发 |
+| M3: 安全底线 | Phase 2 | 风控层 + 熔断 | **已完成** |
 | M4: 自动执行 | Phase 3+4 | 条件单 + 通知推送 | 待开发 |
 | M5: 策略引擎 | Phase 5 | 可编程策略 + 后台运行 | 待开发 |
 | M6: 验证体系 | Phase 6 | 回测 + 模拟盘 | 待开发 |
