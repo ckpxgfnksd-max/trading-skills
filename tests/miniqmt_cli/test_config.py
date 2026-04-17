@@ -65,3 +65,63 @@ def test_account_masked_id():
     acc = AccountConfig(name="live", account_id="88881234")
     assert acc.masked_id().endswith("1234")
     assert "*" in acc.masked_id()
+
+
+def test_risk_config_defaults():
+    from miniqmt_cli.server_config import RiskConfig
+    c = RiskConfig()
+    assert c.enabled is True
+    assert c.max_daily_loss == 50000.0
+    assert c.max_position_pct == 30.0
+    assert c.max_orders_per_minute == 10
+    assert c.max_positions == 10
+
+
+def test_effective_risk_uses_global_when_no_override(tmp_path):
+    from miniqmt_cli.server_config import load_server_config
+    p = tmp_path / "server.toml"
+    p.write_text(
+        '[server]\nqmt_path = "/tmp"\n'
+        '[risk]\nmax_daily_loss = 12345\n'
+        '[accounts.sim]\naccount_id = "55001234"\n',
+        encoding="utf-8",
+    )
+    cfg = load_server_config(str(p))
+    eff = cfg.effective_risk("sim")
+    assert eff.max_daily_loss == 12345
+    assert eff.max_positions == 10  # default retained
+
+
+def test_effective_risk_field_level_override(tmp_path):
+    from miniqmt_cli.server_config import load_server_config
+    p = tmp_path / "server.toml"
+    p.write_text(
+        '[server]\nqmt_path = "/tmp"\n'
+        '[risk]\nmax_daily_loss = 50000\nmax_position_pct = 30\n'
+        '[accounts.live]\naccount_id = "88881234"\n'
+        '[accounts.live.risk]\nmax_daily_loss = 10000\n',
+        encoding="utf-8",
+    )
+    cfg = load_server_config(str(p))
+    eff = cfg.effective_risk("live")
+    assert eff.max_daily_loss == 10000  # override
+    assert eff.max_position_pct == 30.0  # inherited from global
+
+
+def test_risk_state_path_default():
+    from miniqmt_cli.server_config import ServerConfig
+    cfg = ServerConfig()
+    assert cfg.risk_state_path == "~/.miniqmt_cli/risk_state.json"
+
+
+def test_risk_disabled_flag(tmp_path):
+    from miniqmt_cli.server_config import load_server_config
+    p = tmp_path / "server.toml"
+    p.write_text(
+        '[server]\nqmt_path = "/tmp"\n'
+        '[risk]\nenabled = false\n'
+        '[accounts.sim]\naccount_id = "55001234"\n',
+        encoding="utf-8",
+    )
+    cfg = load_server_config(str(p))
+    assert cfg.effective_risk("sim").enabled is False
