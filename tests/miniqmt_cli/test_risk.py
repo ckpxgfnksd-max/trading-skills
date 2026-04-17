@@ -79,3 +79,118 @@ def test_risk_state_version_field(tmp_path):
     state.save()
     data = json.loads(p.read_text())
     assert data["version"] == 1
+
+
+from miniqmt_cli.server.audit import AuditLog
+from miniqmt_cli.server_config import AccountConfig, RiskConfig, ServerConfig
+
+
+def _make_cfg(tmp_path, **overrides) -> ServerConfig:
+    cfg = ServerConfig(
+        host="127.0.0.1", port=8765, qmt_path=str(tmp_path / "qmt"),
+        audit_log_path=str(tmp_path / "orders.jsonl"),
+        risk_state_path=str(tmp_path / "risk_state.json"),
+        risk=RiskConfig(**overrides),
+    )
+    cfg.accounts["sim"] = AccountConfig(
+        name="sim", account_id="55001234", account_type="STOCK",
+    )
+    return cfg
+
+
+class _FakeTraderCtx:
+    """Minimal stand-in for session.get_trader-equivalent; returns a FakeTrader."""
+
+    def __init__(self):
+        from tests.fakes.xtquant_stub import FakeStockAccount, FakeTrader
+        self.trader = FakeTrader("/tmp", 42)
+        self.acc = FakeStockAccount(account_id="55001234", account_type="STOCK")
+
+    def __call__(self, account_name: str):
+        return (self.trader, self.acc)
+
+
+def test_baseline_capture_on_first_check(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0, "cash": 500000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    state = rm._state.accounts["sim"]
+    assert state.baseline_total_asset == 1000000.0
+    assert state.trade_date  # YYYYMMDD
+    saved = (tmp_path / "risk_state.json").read_text()
+    assert "1000000" in saved
+
+
+def test_baseline_reused_same_day(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    ctx.trader.asset_override = {"total_asset": 999999.0}
+    rm.ensure_baseline("sim")
+    assert rm._state.accounts["sim"].baseline_total_asset == 1000000.0
+
+
+def test_baseline_reset_on_new_trade_date(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    monkeypatch.setattr(risk_mod, "_today_str", lambda: "20260416")
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    assert rm._state.accounts["sim"].trade_date == "20260416"
+    monkeypatch.setattr(risk_mod, "_today_str", lambda: "20260417")
+    ctx.trader.asset_override = {"total_asset": 200.0}
+    rm.ensure_baseline("sim")
+    assert rm._state.accounts["sim"].trade_date == "20260417"
+    assert rm._state.accounts["sim"].baseline_total_asset == 200.0
+
+
+def test_baseline_imprecise_flag_when_after_open(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    monkeypatch.setattr(risk_mod, "_capture_is_imprecise", lambda: True)
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    assert rm._state.accounts["sim"].baseline_imprecise is True
+
+
+def test_baseline_capture_failure_raises(tmp_path):
+    from miniqmt_cli.server.risk import BaselineUnavailable, RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.should_fail_asset_query = True
+    rm = RiskManager(cfg, audit, ctx)
+    with pytest.raises(BaselineUnavailable):
+        rm.ensure_baseline("sim")
+    assert "sim" not in rm._state.accounts
+
+
+def test_baseline_audit_row_written(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    rows = [json.loads(l) for l in (tmp_path / "orders.jsonl").read_text().splitlines()]
+    captures = [r for r in rows if r.get("phase") == "risk_baseline_capture"]
+    assert len(captures) == 1
+    assert captures[0]["account"] == "sim"
+    assert captures[0]["baseline_total_asset"] == 1000000.0

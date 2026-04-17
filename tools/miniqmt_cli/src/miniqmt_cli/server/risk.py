@@ -91,3 +91,62 @@ class RiskStateFile:
                 except (OSError, AttributeError):
                     pass
             os.replace(tmp_path, self.path)
+
+
+class BaselineUnavailable(RuntimeError):
+    """Raised when baseline cannot be captured (fail closed)."""
+
+
+def _capture_is_imprecise() -> bool:
+    """True if current Shanghai time is past A-share market open (09:30)."""
+    now = datetime.now(_SHANGHAI_TZ).time()
+    return (now.hour, now.minute) > (9, 30)
+
+
+class RiskManager:
+    def __init__(self, cfg, audit, xttrader_ctx):
+        self._cfg = cfg
+        self._audit = audit
+        self._xttrader_ctx = xttrader_ctx
+        self._state = RiskStateFile.load(cfg.resolved_risk_state_path())
+        self._lock = threading.Lock()
+
+    def ensure_baseline(self, account_name: str) -> None:
+        """Capture baseline if missing or trade_date mismatches today.
+
+        Fail closed: on query error, raises BaselineUnavailable.
+        """
+        today = _today_str()
+        existing = self._state.accounts.get(account_name)
+        if existing is not None and existing.trade_date == today:
+            return
+
+        trader, acc = self._xttrader_ctx(account_name)
+        try:
+            from miniqmt_cli.server import xttrader_adapter
+            asset = xttrader_adapter.query_stock_asset(trader, acc)
+        except Exception as e:
+            log.warning("baseline capture failed for %s: %s", account_name, e)
+            raise BaselineUnavailable(str(e)) from e
+
+        total = float(asset.get("total_asset", 0))
+        if total <= 0:
+            raise BaselineUnavailable(f"total_asset is {total}")
+
+        imprecise = _capture_is_imprecise()
+        new_state = AccountRiskState(
+            trade_date=today,
+            baseline_total_asset=total,
+            baseline_captured_at=_iso_now(),
+            baseline_imprecise=imprecise,
+        )
+        with self._lock:
+            self._state.accounts[account_name] = new_state
+            self._state.save()
+        self._audit.append(
+            phase="risk_baseline_capture",
+            account=account_name,
+            trade_date=today,
+            baseline_total_asset=total,
+            imprecise=imprecise,
+        )
