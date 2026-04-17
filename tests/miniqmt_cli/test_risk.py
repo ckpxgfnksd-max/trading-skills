@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -35,11 +34,10 @@ def test_risk_state_file_atomic_write_round_trip(tmp_path):
     assert state2.accounts["sim"].breaker_tripped is False
 
 
-def test_risk_state_atomic_write_leaves_no_partial(tmp_path):
-    """Interrupted save should leave original file intact."""
-    from miniqmt_cli.server.risk import (
-        AccountRiskState, RiskStateFile,
-    )
+def test_save_replaces_existing_file_atomically(tmp_path, monkeypatch):
+    """If os.replace fails, the existing file must remain intact."""
+    import os as _os
+    from miniqmt_cli.server.risk import AccountRiskState, RiskStateFile
     p = tmp_path / "rs.json"
     state = RiskStateFile.load(p)
     state.accounts["sim"] = AccountRiskState(
@@ -48,13 +46,30 @@ def test_risk_state_atomic_write_leaves_no_partial(tmp_path):
         baseline_captured_at="2026-04-17T00:00:00Z",
     )
     state.save()
-    # Corrupt: simulate partial write via a raw file at path.tmp; atomic save should replace
-    (p.with_suffix(p.suffix + ".tmp")).write_text("garbage")
-    state.accounts["sim"].baseline_total_asset = 200.0
-    state.save()
-    # .tmp should have been os.replace'd away
-    assert not p.with_suffix(p.suffix + ".tmp").exists()
-    assert json.loads(p.read_text())["accounts"]["sim"]["baseline_total_asset"] == 200.0
+    original_bytes = p.read_bytes()
+
+    def boom(src, dst):
+        raise OSError("simulated failure")
+
+    monkeypatch.setattr(_os, "replace", boom)
+    state.accounts["sim"].baseline_total_asset = 999.0
+    with pytest.raises(OSError):
+        state.save()
+    # Original file must be unchanged
+    assert p.read_bytes() == original_bytes
+
+
+def test_load_quarantines_corrupt_file(tmp_path):
+    """A corrupt state file gets renamed and load returns empty."""
+    from miniqmt_cli.server.risk import RiskStateFile
+    p = tmp_path / "rs.json"
+    p.write_text("not valid json {{{", encoding="utf-8")
+    state = RiskStateFile.load(p)
+    assert state.accounts == {}
+    # Original file should have been moved; look for a quarantine sibling
+    siblings = list(tmp_path.iterdir())
+    assert not p.exists() or p.read_text() != "not valid json {{{"
+    assert any(".corrupt-" in s.name for s in siblings)
 
 
 def test_risk_state_version_field(tmp_path):

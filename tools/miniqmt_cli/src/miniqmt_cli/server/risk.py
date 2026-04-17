@@ -5,14 +5,18 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
 STATE_VERSION = 1
+
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _iso_now() -> str:
@@ -20,8 +24,8 @@ def _iso_now() -> str:
 
 
 def _today_str() -> str:
-    """Trading date in local time (daemon host expected to be Asia/Shanghai)."""
-    return datetime.now().strftime("%Y%m%d")
+    """Trading date in Shanghai time (A-share market)."""
+    return datetime.now(_SHANGHAI_TZ).strftime("%Y%m%d")
 
 
 @dataclass
@@ -50,25 +54,37 @@ class RiskStateFile:
         try:
             with open(state.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            log.warning(
-                "risk state file unreadable at %s: %s; starting empty", path, e
+            if not isinstance(data, dict):
+                raise ValueError("risk state root is not an object")
+            for name, raw in (data.get("accounts") or {}).items():
+                state.accounts[name] = AccountRiskState(**raw)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+            log.error(
+                "risk state file unreadable at %s: %s; quarantining and starting empty",
+                state.path, e,
             )
-            return state
-        for name, raw in (data.get("accounts") or {}).items():
-            state.accounts[name] = AccountRiskState(**raw)
+            state.accounts.clear()
+            try:
+                quarantine = state.path.with_suffix(
+                    state.path.suffix + f".corrupt-{int(time.time())}"
+                )
+                os.replace(state.path, quarantine)
+                log.error("corrupt risk state quarantined to %s", quarantine)
+            except OSError:
+                pass
         return state
 
     def save(self) -> None:
+        """Strict atomic write: builds payload under lock, os.replace on commit."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": STATE_VERSION,
-            "accounts": {n: asdict(s) for n, s in self.accounts.items()},
-        }
         with self._lock:
+            payload = {
+                "version": STATE_VERSION,
+                "accounts": {n: asdict(s) for n, s in self.accounts.items()},
+            }
             tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2, allow_nan=False)
                 f.flush()
                 try:
                     os.fsync(f.fileno())
