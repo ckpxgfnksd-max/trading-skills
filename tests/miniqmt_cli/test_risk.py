@@ -566,3 +566,58 @@ def test_check_order_market_order_no_price_rejects(tmp_path, monkeypatch):
     d = rm.check_order("sim", "buy", "000001.SZ", 10, 0.0, order_type="market")
     assert d.allow is False
     assert d.reject_code == "PRICE_UNAVAILABLE"
+
+
+def test_check_order_baseline_pending_when_query_fails(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.should_fail_asset_query = True
+    rm = RiskManager(cfg, audit, ctx)
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "BASELINE_PENDING"
+
+
+def test_check_order_snapshot_stale(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    t = [1000.0]
+    monkeypatch.setattr(risk_mod.time, "monotonic", lambda: t[0])
+    rm = RiskManager(cfg, audit, ctx)
+    rm.ensure_baseline("sim")
+    # Populate initial snapshot
+    rm.get_snapshot("sim")
+    # Now fail queries and advance past hard expiry
+    ctx.trader.should_fail_asset_query = True
+    t[0] = 1400.0  # >5 min
+    d = rm.check_order("sim", "buy", "000001.SZ", 100, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "SNAPSHOT_STALE"
+
+
+def test_pending_rebuild_does_not_consume_frequency_window(tmp_path):
+    """Regression: daemon restart with N open buys must not eat N/min slots."""
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_orders_per_minute=3)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    # Simulate 3 open buy orders present in xttrader
+    ctx.trader.open_orders_override = [
+        {"stock_code": "000001.SZ", "order_id": i, "side": "buy",
+         "status": "submitted", "order_volume": 100, "traded_volume": 0,
+         "price": 10.0}
+        for i in range(501, 504)
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    # First check_order triggers rebuild + would fail if rebuild ate the window
+    d = rm.check_order("sim", "buy", "000002.SZ", 100, 10.0)
+    assert d.allow is True
+    # Window should be empty (rebuild populated pending only)
+    assert len(rm._order_window.get("sim", [])) == 0

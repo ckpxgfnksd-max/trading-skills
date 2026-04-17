@@ -152,6 +152,15 @@ def _get_last_price(code: str) -> Optional[float]:
         return None
 
 
+def _xt_buy_direction() -> int:
+    """Return xtconstant.STOCK_BUY, falling back to 23 if xtquant unavailable."""
+    try:
+        import xtquant.xtconstant as c  # type: ignore
+        return int(getattr(c, "STOCK_BUY", 23))
+    except Exception:
+        return 23
+
+
 class RiskManager:
     def __init__(
         self,
@@ -280,6 +289,23 @@ class RiskManager:
                     "volume": volume, "amount": volume * price,
                 }
 
+    def _add_pending_only(
+        self, account: str, code: str, volume: int, price: float, order_id: int,
+    ) -> None:
+        """Update pending tracking without touching the frequency window.
+
+        Used by _rebuild_pending to replay open orders from xtquant without
+        re-counting them against max_orders_per_minute.
+        """
+        with self._lock:
+            entries = self._pending.setdefault(account, {})
+            entry = entries.setdefault(code, PendingEntry())
+            entry.buy_volume += volume
+            entry.buy_amount += volume * price
+            entry.by_order_id[order_id] = {
+                "volume": volume, "amount": volume * price,
+            }
+
     def on_trade_event(self, event: dict) -> None:
         """Called from xtquant callback thread. Fan-in point for order_status
         and trade events. Safe to call with events for unknown accounts.
@@ -355,15 +381,16 @@ class RiskManager:
             state.breaker_tripped = True
             state.breaker_reason = reason
             state.breaker_tripped_at = _iso_now()
+            baseline_value = state.baseline_total_asset  # snapshot under lock
             self._state.save()
         snap = self._snapshots.get(account)
         self._audit.append(
             phase="risk_breaker_trip",
             account=account,
             reason=reason,
-            baseline_total_asset=state.baseline_total_asset,
+            baseline_total_asset=baseline_value,
             current_total_asset=snap.total_asset if snap else None,
-            daily_pnl=(snap.total_asset - state.baseline_total_asset) if snap else None,
+            daily_pnl=(snap.total_asset - baseline_value) if snap else None,
         )
         log.warning("RISK BREAKER TRIPPED for %s: %s", account, reason)
 
@@ -527,7 +554,7 @@ class RiskManager:
             status = str(o.get("order_status_str") or o.get("status") or "").lower()
             if status and status not in open_statuses:
                 continue
-            side = o.get("side") or ("buy" if o.get("direction") == 23 else None)
+            side = o.get("side") or ("buy" if o.get("direction") == _xt_buy_direction() else None)
             if side != "buy":
                 continue
             code = o.get("stock_code") or o.get("code")
@@ -538,7 +565,7 @@ class RiskManager:
             price = float(o.get("price") or o.get("order_price") or 0.0)
             if volume <= 0 or not code or order_id == 0:
                 continue
-            self.record_accepted(account, "buy", code, volume, price, order_id)
+            self._add_pending_only(account, code, volume, price, order_id)
             replayed += 1
         self._audit.append(
             phase="risk_pending_rebuild",
