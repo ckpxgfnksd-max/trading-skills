@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -24,30 +23,42 @@ class ResetRequest(BaseModel):
 
 
 def _format_account_status(sess, account: str) -> dict:
-    state = sess.risk._state.accounts.get(account)
     eff = sess.cfg.effective_risk(account)
-    pending = sess.risk._pending.get(account, {})
-    window = sess.risk._order_window.get(account, [])
-    now = time.monotonic()
-    in_window = sum(1 for ts in window if now - ts <= 60.0)
+    snapshot = sess.risk.snapshot_status(account)
+    state = snapshot["state"]
+    pending = snapshot["pending_orders"]
+    orders_in_window = snapshot["orders_in_window"]
+
     current_asset = None
     try:
         snap = sess.risk.get_snapshot(account)
         current_asset = snap.total_asset
-    except Exception:
-        pass
-    base = state.baseline_total_asset if state else None
+    except Exception as e:
+        log.debug("snapshot unavailable for %s: %s", account, e)
+
+    base = state["baseline_total_asset"] if state else None
     pnl = (current_asset - base) if (current_asset is not None and base is not None) else None
+
+    reset_count_today = 0
+    if state:
+        td = state["trade_date"]
+        if td:
+            ymd = f"{td[0:4]}-{td[4:6]}-{td[6:8]}"
+            reset_count_today = sum(
+                1 for r in state["reset_history"]
+                if isinstance(r.get("reset_at"), str) and r["reset_at"].startswith(ymd)
+            )
+
     return {
-        "trade_date": state.trade_date if state else None,
+        "trade_date": state["trade_date"] if state else None,
         "baseline_total_asset": base,
-        "baseline_captured_at": state.baseline_captured_at if state else None,
-        "baseline_imprecise": state.baseline_imprecise if state else None,
+        "baseline_captured_at": state["baseline_captured_at"] if state else None,
+        "baseline_imprecise": state["baseline_imprecise"] if state else None,
         "current_total_asset": current_asset,
         "daily_pnl": pnl,
-        "breaker_tripped": bool(state and state.breaker_tripped),
-        "breaker_reason": state.breaker_reason if state else None,
-        "breaker_tripped_at": state.breaker_tripped_at if state else None,
+        "breaker_tripped": bool(state and state["breaker_tripped"]),
+        "breaker_reason": state["breaker_reason"] if state else None,
+        "breaker_tripped_at": state["breaker_tripped_at"] if state else None,
         "effective_config": {
             "enabled": eff.enabled,
             "max_daily_loss": eff.max_daily_loss,
@@ -55,13 +66,10 @@ def _format_account_status(sess, account: str) -> dict:
             "max_orders_per_minute": eff.max_orders_per_minute,
             "max_positions": eff.max_positions,
         },
-        "orders_in_window": in_window,
-        "pending_orders": {
-            code: {"buy_volume": e.buy_volume, "buy_amount": e.buy_amount}
-            for code, e in pending.items()
-        },
-        "reset_count_today": len(state.reset_history) if state else 0,
-        "reset_history": state.reset_history if state else [],
+        "orders_in_window": orders_in_window,
+        "pending_orders": pending,
+        "reset_count_today": reset_count_today,
+        "reset_history": state["reset_history"] if state else [],
     }
 
 

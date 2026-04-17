@@ -418,6 +418,41 @@ class RiskManager:
         )
         return {"account": account, "previous_reason": previous_reason, "reset_at": reset_at}
 
+    def snapshot_status(self, account: str) -> dict:
+        """Return a consistent read-only snapshot of risk state for an account.
+
+        Holds _lock during the multi-field read so external observers
+        (e.g. /risk/status) never see half-updated state.
+        """
+        import time as _time
+        now = _time.monotonic()
+        with self._lock:
+            state = self._state.accounts.get(account)
+            state_copy = None
+            if state is not None:
+                state_copy = {
+                    "trade_date": state.trade_date,
+                    "baseline_total_asset": state.baseline_total_asset,
+                    "baseline_captured_at": state.baseline_captured_at,
+                    "baseline_imprecise": state.baseline_imprecise,
+                    "breaker_tripped": state.breaker_tripped,
+                    "breaker_reason": state.breaker_reason,
+                    "breaker_tripped_at": state.breaker_tripped_at,
+                    "reset_history": list(state.reset_history),
+                }
+            pending = self._pending.get(account, {})
+            pending_copy = {
+                code: {"buy_volume": e.buy_volume, "buy_amount": e.buy_amount}
+                for code, e in pending.items()
+            }
+            window = self._order_window.get(account, [])
+            orders_in_window = sum(1 for ts in window if now - ts <= 60.0)
+        return {
+            "state": state_copy,
+            "pending_orders": pending_copy,
+            "orders_in_window": orders_in_window,
+        }
+
     def check_order(
         self, account: str, side: str, code: str, volume: int,
         price: float, order_type: str = "limit",
