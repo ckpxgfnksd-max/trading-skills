@@ -67,9 +67,13 @@ def _render_account_status(name: str, data: dict) -> None:
     pending = data.get("pending_orders") or {}
     if pending:
         for code, e in pending.items():
-            click.echo(
-                f"  Pending:         {code}: +{e['buy_volume']} ({e['buy_amount']:,.2f})"
-            )
+            parts = []
+            if e.get("buy_volume", 0) > 0:
+                parts.append(f"buy+{e['buy_volume']} ({e['buy_amount']:,.2f})")
+            if e.get("sell_volume", 0) > 0:
+                parts.append(f"sell+{e['sell_volume']} ({e['sell_amount']:,.2f})")
+            if parts:
+                click.echo(f"  Pending:         {code}: {', '.join(parts)}")
     click.echo(f"  Resets today:    {data.get('reset_count_today', 0)}")
 
 

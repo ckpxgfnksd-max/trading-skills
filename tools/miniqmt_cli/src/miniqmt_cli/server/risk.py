@@ -125,7 +125,10 @@ class AccountSnapshot:
 class PendingEntry:
     buy_volume: int = 0
     buy_amount: float = 0.0
-    by_order_id: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    sell_volume: int = 0
+    sell_amount: float = 0.0
+    by_order_id: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    # by_order_id entry shape: {"side": "buy"|"sell", "volume": int, "amount": float}
 
 
 @dataclass
@@ -273,21 +276,28 @@ class RiskManager:
         price: float, order_id: int,
     ) -> None:
         """Call after an order is accepted by xttrader. Updates frequency
-        window; for buys, adds to pending tracking by order_id.
+        window and per-side pending tracking by order_id.
         """
         with self._lock:
             self._order_window.setdefault(account, deque()).append(time.monotonic())
+            entries = self._pending.setdefault(account, {})
+            entry = entries.setdefault(code, PendingEntry())
+            amount = volume * price
             if side == "buy":
-                entries = self._pending.setdefault(account, {})
-                entry = entries.setdefault(code, PendingEntry())
                 entry.buy_volume += volume
-                entry.buy_amount += volume * price
-                entry.by_order_id[order_id] = {
-                    "volume": volume, "amount": volume * price,
-                }
+                entry.buy_amount += amount
+            elif side == "sell":
+                entry.sell_volume += volume
+                entry.sell_amount += amount
+            else:
+                return
+            entry.by_order_id[order_id] = {
+                "side": side, "volume": volume, "amount": amount,
+            }
 
     def _add_pending_only(
-        self, account: str, code: str, volume: int, price: float, order_id: int,
+        self, account: str, side: str, code: str, volume: int,
+        price: float, order_id: int,
     ) -> None:
         """Update pending tracking without touching the frequency window.
 
@@ -297,10 +307,17 @@ class RiskManager:
         with self._lock:
             entries = self._pending.setdefault(account, {})
             entry = entries.setdefault(code, PendingEntry())
-            entry.buy_volume += volume
-            entry.buy_amount += volume * price
+            amount = volume * price
+            if side == "buy":
+                entry.buy_volume += volume
+                entry.buy_amount += amount
+            elif side == "sell":
+                entry.sell_volume += volume
+                entry.sell_amount += amount
+            else:
+                return
             entry.by_order_id[order_id] = {
-                "volume": volume, "amount": volume * price,
+                "side": side, "volume": volume, "amount": amount,
             }
 
     def on_trade_event(self, event: dict) -> None:
@@ -340,9 +357,14 @@ class RiskManager:
             for code, entry in list(codes.items()):
                 if order_id in entry.by_order_id:
                     removed = entry.by_order_id.pop(order_id)
-                    entry.buy_volume -= int(removed["volume"])
-                    entry.buy_amount -= float(removed["amount"])
-                    if entry.buy_volume <= 0:
+                    side = removed.get("side", "buy")
+                    if side == "buy":
+                        entry.buy_volume -= int(removed["volume"])
+                        entry.buy_amount -= float(removed["amount"])
+                    else:
+                        entry.sell_volume -= int(removed["volume"])
+                        entry.sell_amount -= float(removed["amount"])
+                    if entry.buy_volume <= 0 and entry.sell_volume <= 0:
                         del codes[code]
                     break
 
@@ -354,6 +376,7 @@ class RiskManager:
             for code, entry in list(codes.items()):
                 if order_id in entry.by_order_id:
                     old = entry.by_order_id[order_id]
+                    side = old.get("side", "buy")
                     old_vol = int(old["volume"])
                     old_amt = float(old["amount"])
                     if old_vol <= 0:
@@ -361,11 +384,15 @@ class RiskManager:
                     price_per = old_amt / old_vol
                     new_amt = remaining_volume * price_per
                     entry.by_order_id[order_id] = {
-                        "volume": remaining_volume, "amount": new_amt,
+                        "side": side, "volume": remaining_volume, "amount": new_amt,
                     }
-                    entry.buy_volume += (remaining_volume - old_vol)
-                    entry.buy_amount += (new_amt - old_amt)
-                    if entry.buy_volume <= 0:
+                    if side == "buy":
+                        entry.buy_volume += (remaining_volume - old_vol)
+                        entry.buy_amount += (new_amt - old_amt)
+                    else:
+                        entry.sell_volume += (remaining_volume - old_vol)
+                        entry.sell_amount += (new_amt - old_amt)
+                    if entry.buy_volume <= 0 and entry.sell_volume <= 0:
                         del codes[code]
                     break
 
@@ -463,7 +490,12 @@ class RiskManager:
                 }
             pending = self._pending.get(account, {})
             pending_copy = {
-                code: {"buy_volume": e.buy_volume, "buy_amount": e.buy_amount}
+                code: {
+                    "buy_volume": e.buy_volume,
+                    "buy_amount": e.buy_amount,
+                    "sell_volume": e.sell_volume,
+                    "sell_amount": e.sell_amount,
+                }
                 for code, e in pending.items()
             }
             window = self._order_window.get(account, [])
@@ -589,7 +621,7 @@ class RiskManager:
             )
 
     def _rebuild_pending(self, account: str) -> None:
-        """On first check per account, replay open buys from xttrader."""
+        """On first check per account, replay open orders from xttrader."""
         try:
             trader, acc = self._xttrader_ctx(account)
             from miniqmt_cli.server import xttrader_adapter
@@ -606,12 +638,19 @@ class RiskManager:
 
         replayed = 0
         open_statuses = {"submitted", "confirmed", "partially_filled"}
+        buy_direction = _xt_buy_direction()
         for o in orders or []:
             status = str(o.get("order_status_str") or o.get("status") or "").lower()
             if status and status not in open_statuses:
                 continue
-            side = o.get("side") or ("buy" if o.get("direction") == _xt_buy_direction() else None)
-            if side != "buy":
+            explicit_side = o.get("side")
+            if explicit_side in ("buy", "sell"):
+                side = explicit_side
+            elif o.get("direction") == buy_direction:
+                side = "buy"
+            elif o.get("direction") is not None:
+                side = "sell"
+            else:
                 continue
             code = o.get("stock_code") or o.get("code")
             order_id = int(o.get("order_id") or o.get("seq") or 0)
@@ -621,7 +660,7 @@ class RiskManager:
             price = float(o.get("price") or o.get("order_price") or 0.0)
             if volume <= 0 or not code or order_id == 0:
                 continue
-            self._add_pending_only(account, code, volume, price, order_id)
+            self._add_pending_only(account, side, code, volume, price, order_id)
             replayed += 1
         self._audit.append(
             phase="risk_pending_rebuild",

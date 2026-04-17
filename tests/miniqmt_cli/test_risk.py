@@ -290,16 +290,99 @@ def test_record_accepted_buy_adds_to_pending(tmp_path):
     e = rm._pending["sim"]["000001.SZ"]
     assert e.buy_volume == 500
     assert e.buy_amount == 5000.0
-    assert e.by_order_id[200] == {"volume": 500, "amount": 5000.0}
+    assert e.by_order_id[200] == {"side": "buy", "volume": 500, "amount": 5000.0}
 
 
-def test_record_accepted_sell_does_not_add_to_pending(tmp_path):
+def test_record_accepted_sell_tracks_pending(tmp_path):
+    """Sell orders now update sell_volume/sell_amount in PendingEntry."""
     from miniqmt_cli.server.risk import RiskManager
     cfg = _make_cfg(tmp_path)
     audit = AuditLog(tmp_path / "orders.jsonl")
     rm = RiskManager(cfg, audit, _FakeTraderCtx())
-    rm.record_accepted("sim", "sell", "000001.SZ", 100, 10.0, order_id=201)
-    assert "sim" not in rm._pending or not rm._pending["sim"].get("000001.SZ")
+    rm.record_accepted("sim", "sell", "000001.SZ", 300, 10.0, order_id=700)
+    e = rm._pending["sim"]["000001.SZ"]
+    assert e.sell_volume == 300
+    assert e.sell_amount == 3000.0
+    assert e.buy_volume == 0
+    assert e.by_order_id[700]["side"] == "sell"
+
+
+def test_record_accepted_mixed_buy_and_sell_same_code(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=701)
+    rm.record_accepted("sim", "sell", "000001.SZ", 200, 10.0, order_id=702)
+    e = rm._pending["sim"]["000001.SZ"]
+    assert e.buy_volume == 500
+    assert e.sell_volume == 200
+
+
+def test_order_status_filled_removes_sell_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "sell", "000001.SZ", 300, 10.0, order_id=800)
+    rm.on_trade_event({
+        "type": "order_status", "account": "sim", "order_id": 800,
+        "status": "filled", "volume": 300, "filled_volume": 300,
+    })
+    assert "000001.SZ" not in rm._pending.get("sim", {})
+
+
+def test_order_status_partial_fill_reduces_sell_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "sell", "000001.SZ", 300, 10.0, order_id=801)
+    rm.on_trade_event({
+        "type": "order_status", "account": "sim", "order_id": 801,
+        "status": "partially_filled", "volume": 300, "filled_volume": 100,
+    })
+    e = rm._pending["sim"]["000001.SZ"]
+    assert e.sell_volume == 200
+    assert e.sell_amount == 2000.0
+
+
+def test_check_order_position_pct_unaffected_by_sell_pending(tmp_path):
+    """Conservative semantics: sell pending does NOT relax position_pct.
+
+    A pending sell does not reduce existing_mv — if user wanted to rotate
+    by selling then buying, the buy check still uses full position as
+    denominator. Protects against race where sell doesn't fill.
+    """
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path, max_position_pct=10.0)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000.0}
+    # 100 shares held at 10.0 (MV=100, = 10% already)
+    ctx.trader.positions_override = [
+        {"stock_code": "000001.SZ", "volume": 10, "market_value": 100.0}
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    # Record a sell of 5 shares — does NOT relax the limit
+    rm.record_accepted("sim", "sell", "000001.SZ", 5, 10.0, order_id=802)
+    # New buy of 1 share would push MV to 100 + 10 = 110 > 100 limit
+    d = rm.check_order("sim", "buy", "000001.SZ", 1, 10.0)
+    assert d.allow is False
+    assert d.reject_code == "POSITION_PCT"
+
+
+def test_snapshot_status_exposes_sell_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "sell", "000001.SZ", 300, 10.0, order_id=803)
+    status = rm.snapshot_status("sim")
+    entry = status["pending_orders"]["000001.SZ"]
+    assert entry["sell_volume"] == 300
+    assert entry["sell_amount"] == 3000.0
+    assert entry.get("buy_volume", 0) == 0
 
 
 def test_record_accepted_adds_frequency_window_entry(tmp_path):
