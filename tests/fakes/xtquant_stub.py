@@ -130,6 +130,7 @@ class FakeTrader:
     def query_stock_positions(self, acc):
         if self.positions_override is not None:
             return [dict(p) for p in self.positions_override]
+        # market_value = volume(100) * lastPrice(12.34) from FakeXtData.ticks
         return [
             {"stock_code": "000001.SZ", "volume": 100, "avg_price": 12.0,
              "market_value": 1234.0, "account": acc.account_id}
@@ -144,23 +145,22 @@ class FakeTrader:
         return []
 
     # Test helpers to drive xtquant callbacks
+    def _fire(self, method_name: str, **fields) -> None:
+        if self.callback is None:
+            raise RuntimeError(
+                f"{method_name} called before register_callback"
+            )
+        if not hasattr(self.callback, method_name):
+            raise AttributeError(
+                f"callback has no {method_name}"
+            )
+        getattr(self.callback, method_name)(types.SimpleNamespace(**fields))
+
     def fire_order_event(self, **order_fields):
-        class _FakeOrder:
-            pass
-        o = _FakeOrder()
-        for k, v in order_fields.items():
-            setattr(o, k, v)
-        if self.callback and hasattr(self.callback, "on_order_event"):
-            self.callback.on_order_event(o)
+        self._fire("on_order_event", **order_fields)
 
     def fire_trade_event(self, **trade_fields):
-        class _FakeTrade:
-            pass
-        t = _FakeTrade()
-        for k, v in trade_fields.items():
-            setattr(t, k, v)
-        if self.callback and hasattr(self.callback, "on_trade_event"):
-            self.callback.on_trade_event(t)
+        self._fire("on_trade_event", **trade_fields)
 
 
 class FakeXtTrader:
