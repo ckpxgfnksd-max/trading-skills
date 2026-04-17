@@ -46,7 +46,18 @@ def get_market_data_ex(
 ) -> Dict[str, Any]:
     xtdata = _xtdata()
     for code in codes:
-        xtdata.download_history_data(code, period, start_time, end_time)
+        # download_history_data is async; download_history_data2 blocks until complete.
+        # Fall back to the async version if the newer API is unavailable.
+        if hasattr(xtdata, "download_history_data2"):
+            xtdata.download_history_data2(code, period, start_time, end_time)
+        else:
+            import threading
+            done = threading.Event()
+            xtdata.download_history_data(
+                code, period, start_time, end_time,
+                callback=lambda _: done.set(),
+            )
+            done.wait(timeout=60)
     return xtdata.get_market_data_ex(
         field_list=fields or [],
         stock_list=codes,
