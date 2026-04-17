@@ -173,8 +173,48 @@ async def place_order(request: Request, body: OrderRequest):
         confirm_live_last4=body.confirm_live_last4,
     )
 
+    # Ensure trader is logged in BEFORE risk check (so risk can query asset/positions).
     try:
         handle = await sess.get_trader(body.account)
+    except Exception as e:
+        sess.audit.append(
+            phase="post",
+            client_req_id=body.client_req_id,
+            status="error",
+            error=f"login failed: {e}",
+        )
+        raise HTTPException(status_code=500, detail=f"trader login failed: {e}")
+
+    # Risk check (Phase 2)
+    decision = sess.risk.check_order(
+        body.account, body.side, body.code, body.volume, body.price,
+        order_type=body.type,
+    )
+    sess.audit.append(
+        phase="risk_check",
+        client_req_id=body.client_req_id,
+        account=body.account,
+        side=body.side,
+        code=body.code,
+        volume=body.volume,
+        price=body.price,
+        type=body.type,
+        allow=decision.allow,
+        reject_code=decision.reject_code,
+        reject_detail=decision.reject_detail,
+    )
+    if not decision.allow:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "risk_reject",
+                "code": decision.reject_code,
+                "message": decision.reject_detail,
+            },
+        )
+
+    # Submit
+    try:
         result = xttrader_adapter.order_stock(
             handle.trader,
             handle.acc,
@@ -201,6 +241,11 @@ async def place_order(request: Request, body: OrderRequest):
         "status": status,
         "order_id": seq if seq > 0 else None,
     }
+    # Update risk pending / frequency window (Phase 2)
+    if seq > 0:
+        sess.risk.record_accepted(
+            body.account, body.side, body.code, body.volume, body.price, int(seq),
+        )
     sess.audit.append(
         phase="post",
         client_req_id=body.client_req_id,

@@ -169,3 +169,48 @@ def test_cancel_flow(client, fake_xtquant):
     )
     assert r2.status_code == 200
     assert fake_xtquant.traders[0].cancels == [order_id]
+
+
+def test_order_rejected_by_risk_check(client, server_cfg, fake_xtquant):
+    """Risk check rejection should return 400 and audit a risk_check row."""
+    # Shrink max_orders_per_minute so the 2nd order hits FREQUENCY
+    from miniqmt_cli.server_config import RiskConfig
+    sess = client.app.state.session
+    sess.cfg.risk = RiskConfig(max_orders_per_minute=1)
+    # Prime trader login and baseline via first order
+    r1 = client.post("/trade/order", json=_body(client_req_id="req-rc1"))
+    assert r1.status_code == 200
+    # Second order exceeds 1/min
+    r2 = client.post("/trade/order", json=_body(client_req_id="req-rc2"))
+    assert r2.status_code == 400
+    detail = r2.json()["detail"]
+    assert detail["error"] == "risk_reject"
+    assert detail["code"] == "FREQUENCY"
+    # audit contains a risk_check row with allow=False
+    import json
+    rows = [
+        json.loads(l)
+        for l in server_cfg.resolved_audit_log_path().read_text().splitlines()
+    ]
+    risk_rows = [r for r in rows if r.get("phase") == "risk_check"]
+    assert any(
+        r.get("allow") is False and r.get("reject_code") == "FREQUENCY"
+        for r in risk_rows
+    )
+
+
+def test_order_risk_check_success_recorded(client, server_cfg, fake_xtquant):
+    """Allowed risk check should also write an audit row (allow=True)."""
+    r = client.post("/trade/order", json=_body(client_req_id="req-rc-ok"))
+    assert r.status_code == 200
+    import json
+    rows = [
+        json.loads(l)
+        for l in server_cfg.resolved_audit_log_path().read_text().splitlines()
+    ]
+    assert any(
+        r.get("phase") == "risk_check"
+        and r.get("client_req_id") == "req-rc-ok"
+        and r.get("allow") is True
+        for r in rows
+    )
