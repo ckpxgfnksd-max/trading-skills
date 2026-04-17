@@ -418,6 +418,18 @@ class RiskManager:
         )
         return {"account": account, "previous_reason": previous_reason, "reset_at": reset_at}
 
+    def tripped_accounts(self) -> List[str]:
+        """Return account names whose breaker is currently tripped.
+
+        Lock-protected read; safe to call concurrently with trip_breaker /
+        reset_breaker / baseline capture (which may add new entries).
+        """
+        with self._lock:
+            return [
+                name for name, s in self._state.accounts.items()
+                if s.breaker_tripped
+            ]
+
     def snapshot_status(self, account: str) -> dict:
         """Return a consistent read-only snapshot of risk state for an account.
 

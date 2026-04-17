@@ -29,10 +29,7 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
         if dry_run:
             return {"state": "ready", "dry_run": True}
         # Risk breaker has highest priority — surfaces even if xtquant later fails
-        tripped = [
-            n for n, s in sess.risk._state.accounts.items()
-            if s.breaker_tripped
-        ]
+        tripped = sess.risk.tripped_accounts()
         if tripped:
             return {"state": "risk_breaker_tripped", "tripped_accounts": tripped}
         try:
