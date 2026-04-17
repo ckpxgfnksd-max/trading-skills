@@ -1,6 +1,6 @@
 # miniqmt-cli Risk Control (Phase 2) Design
 
-**Status:** Draft (awaiting review)
+**Status:** Shipped in v0.2.0; 2026-04-18 doc reconciliation
 **Date:** 2026-04-17
 **Target version:** v0.2.0
 **Roadmap:** docs/roadmap-auto-trading.md — Phase 2 / Milestone M3
@@ -286,8 +286,10 @@ Removal logic iterates `pending[account]` to find the entry containing `order_id
 
 On `SessionManager.__init__`:
 1. `RiskManager.__init__` loads `risk_state.json` (creating empty if absent).
-2. SessionManager schedules `asyncio.create_task(risk.startup_baseline_retry())` — attempts baseline capture for each configured account with exponential backoff: base 5 s, doubling on failure, cap at 60 s, until success (or daemon shutdown). Per-account failures tracked independently so one account's xtquant hiccup does not block others.
-3. Pending rebuild is lazy: on first `check_order` for an account, `query_stock_orders` is called and open buys are replayed into `_pending`.
+2. Baseline capture is **lazy**: triggered inside `check_order` on first invocation per account (via `ensure_baseline`), rather than scheduled as a startup task. A concurrent-safe double-check inside `self._lock` prevents duplicate captures when first orders arrive on multiple threads.
+3. Pending rebuild is similarly lazy: on first `check_order` for an account, `query_stock_orders` is called and open buys are replayed into `_pending` via `_add_pending_only` (which bypasses the frequency window).
+
+Rationale: an xtquant hiccup during daemon boot should not prevent other subsystems from initializing; baseline capture simply defers until the first trading action for that account. An explicit background retry task was considered but deferred as optimization — the first `check_order` naturally retries on every new order, and the fail-closed `BASELINE_PENDING` reject code keeps the system safe during the gap.
 
 On daemon shutdown: no special flush needed; state is persisted eagerly on every mutation.
 
