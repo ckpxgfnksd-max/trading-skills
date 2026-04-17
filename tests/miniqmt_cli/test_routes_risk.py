@@ -131,3 +131,24 @@ def test_snapshot_status_returns_consistent_state(client, fake_xtquant):
     assert snap2["state"] is None
     assert snap2["pending_orders"] == {}
     assert snap2["orders_in_window"] == 0
+
+
+def test_health_reflects_breaker_tripped(client, fake_xtquant):
+    sess = client.app.state.session
+    client.post("/trade/order", json=_body_order(client_req_id="req-h"))
+    sess.risk.trip_breaker("sim", reason="testing")
+    resp = client.get("/health")
+    body = resp.json()
+    assert body["state"] == "risk_breaker_tripped"
+    assert "sim" in body["tripped_accounts"]
+
+
+def test_health_no_breaker_when_reset(client, fake_xtquant):
+    """Once breaker is reset, /health should revert to normal state."""
+    sess = client.app.state.session
+    client.post("/trade/order", json=_body_order(client_req_id="req-h2"))
+    sess.risk.trip_breaker("sim", reason="testing")
+    sess.risk.reset_breaker("sim", operator_note="manual")
+    resp = client.get("/health")
+    body = resp.json()
+    assert body["state"] != "risk_breaker_tripped"
