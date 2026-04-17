@@ -216,3 +216,133 @@ def test_order_buy_confirm_live_bad_length(cli_env):
     )
     assert result.exit_code == 3
     assert "4 digits" in result.output
+
+
+# ---------------------------------------------------------------------------
+# risk status / reset CLI
+# ---------------------------------------------------------------------------
+
+def test_cli_risk_status_json(cli_env, fake_xtquant):
+    """`miniqmt-cli --format json risk status` returns structured JSON."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--format", "json", "risk", "status"])
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.output)
+    assert "accounts" in body
+    assert "sim" in body["accounts"]
+
+
+def test_cli_risk_status_per_account_json(cli_env, fake_xtquant):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["--format", "json", "risk", "status", "--account", "sim"]
+    )
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.output)
+    assert body.get("account") == "sim"
+
+
+def test_cli_risk_status_table(cli_env, fake_xtquant):
+    """Table mode prints per-account summary with key labels."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["risk", "status", "--account", "sim"])
+    assert result.exit_code == 0, result.output
+    assert "Account: sim" in result.output
+    assert "Breaker:" in result.output
+    assert "Config:" in result.output
+
+
+def test_cli_risk_reset_requires_note(cli_env, fake_xtquant):
+    """Missing --note -> Click usage error exit code 2."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["risk", "reset", "--account", "sim", "--yes"]
+    )
+    assert result.exit_code == 2
+    assert "note" in result.output.lower()
+
+
+def test_cli_risk_reset_requires_account(cli_env, fake_xtquant):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["risk", "reset", "--note", "x", "--yes"]
+    )
+    assert result.exit_code == 2
+    assert "account" in result.output.lower()
+
+
+def test_cli_risk_reset_breaker_not_tripped(cli_env, fake_xtquant):
+    """Daemon would 400, CLI short-circuits via status check -> RiskReject (code 4)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["risk", "reset", "--account", "sim", "--note", "x", "--yes"]
+    )
+    assert result.exit_code == 4, result.output
+    combined = (result.output or "").lower()
+    assert "not tripped" in combined or "not_tripped" in combined
+
+
+def test_cli_risk_reset_tripped_success(cli_env, fake_xtquant, client):
+    """When breaker is tripped, CLI reset posts and exits 0."""
+    # Prime baseline
+    resp = client.post("/trade/order", json={
+        "account": "sim", "code": "000001.SZ", "side": "buy",
+        "volume": 100, "price": 12.0, "type": "limit",
+        "client_req_id": "req-cli-reset",
+    })
+    assert resp.status_code == 200, resp.text
+    # Trip the breaker
+    client.app.state.session.risk.trip_breaker("sim", reason="cli-test")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["risk", "reset", "--account", "sim", "--note", "manual-cli", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Reset OK" in result.output
+    # Subsequent status should not be tripped
+    resp2 = client.get("/risk/status", params={"account": "sim"})
+    assert resp2.json().get("breaker_tripped") is False
+
+
+def test_cli_risk_reset_declined_without_yes(cli_env, fake_xtquant, client):
+    """Tripped breaker + no --yes + prompt input 'no' -> GuardExit (code 3)."""
+    resp = client.post("/trade/order", json={
+        "account": "sim", "code": "000001.SZ", "side": "buy",
+        "volume": 100, "price": 12.0, "type": "limit",
+        "client_req_id": "req-cli-decline",
+    })
+    assert resp.status_code == 200, resp.text
+    client.app.state.session.risk.trip_breaker("sim", reason="cli-decline")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["risk", "reset", "--account", "sim", "--note", "maybe"],
+        input="no\n",
+    )
+    assert result.exit_code == 3, result.output
+    assert "declined" in result.output.lower()
+
+
+def test_cli_risk_reset_live_without_confirm(cli_env, fake_xtquant, client):
+    """Live account tripped breaker, no --confirm-live -> daemon 400 surfaces as error."""
+    # Prime live baseline
+    resp = client.post("/trade/order", json={
+        "account": "live", "code": "000001.SZ", "side": "buy",
+        "volume": 100, "price": 12.0, "type": "limit",
+        "client_req_id": "req-cli-live",
+        "confirm_live_last4": "1234",
+    })
+    assert resp.status_code == 200, resp.text
+    client.app.state.session.risk.trip_breaker("live", reason="cli-live")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["risk", "reset", "--account", "live", "--note", "no-confirm", "--yes"],
+    )
+    # ClickException default exit code (1) from transport error-surface path.
+    assert result.exit_code != 0
+    assert "confirm_live_last4" in result.output

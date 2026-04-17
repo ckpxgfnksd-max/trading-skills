@@ -6,6 +6,7 @@ import click
 EXIT_GENERIC = 1
 EXIT_BROKER = 2
 EXIT_GUARD = 3
+EXIT_RISK = 4
 
 
 class GuardExit(click.ClickException):
@@ -22,3 +23,13 @@ class BrokerReject(click.ClickException):
 
     def __init__(self, message: str):
         super().__init__(message)
+
+
+class RiskReject(click.ClickException):
+    """Exits with code 4: daemon-side risk layer refused the action."""
+
+    exit_code = EXIT_RISK
+
+    def __init__(self, code: str, message: str):
+        super().__init__(f"risk_reject [{code}] {message}")
+        self.code = code

@@ -9,6 +9,7 @@ from miniqmt_cli.commands.config_cmd import config_group
 from miniqmt_cli.commands.instrument import instrument
 from miniqmt_cli.commands.kline import kline
 from miniqmt_cli.commands.order import order
+from miniqmt_cli.commands.risk import risk
 from miniqmt_cli.commands.sector import sector
 from miniqmt_cli.commands.server import health, serve, version
 from miniqmt_cli.commands.setup import setup
@@ -48,6 +49,7 @@ cli.add_command(ticks)
 cli.add_command(stream)
 cli.add_command(account)
 cli.add_command(order)
+cli.add_command(risk)
 
 
 if __name__ == "__main__":
