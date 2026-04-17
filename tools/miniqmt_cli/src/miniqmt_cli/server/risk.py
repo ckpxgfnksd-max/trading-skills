@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -98,13 +98,23 @@ class BaselineUnavailable(RuntimeError):
 
 
 def _capture_is_imprecise() -> bool:
-    """True if current Shanghai time is past A-share market open (09:30)."""
+    """True if Shanghai time is at or past A-share market open (09:30).
+
+    A daemon that starts after this time captures a baseline that does
+    NOT reflect pre-open losses; callers should surface this warning.
+    """
+    from datetime import time as _time
     now = datetime.now(_SHANGHAI_TZ).time()
-    return (now.hour, now.minute) > (9, 30)
+    return now >= _time(9, 30)
 
 
 class RiskManager:
-    def __init__(self, cfg, audit, xttrader_ctx):
+    def __init__(
+        self,
+        cfg: "ServerConfig",
+        audit: "AuditLog",
+        xttrader_ctx: Callable[[str], tuple],
+    ) -> None:
         self._cfg = cfg
         self._audit = audit
         self._xttrader_ctx = xttrader_ctx
@@ -123,13 +133,13 @@ class RiskManager:
 
         trader, acc = self._xttrader_ctx(account_name)
         try:
-            from miniqmt_cli.server import xttrader_adapter
+            from miniqmt_cli.server import xttrader_adapter  # deferred: avoid session->risk->xttrader cycle risk
             asset = xttrader_adapter.query_stock_asset(trader, acc)
         except Exception as e:
             log.warning("baseline capture failed for %s: %s", account_name, e)
             raise BaselineUnavailable(str(e)) from e
 
-        total = float(asset.get("total_asset", 0))
+        total = float(asset.get("total_asset", 0.0))
         if total <= 0:
             raise BaselineUnavailable(f"total_asset is {total}")
 
@@ -141,6 +151,10 @@ class RiskManager:
             baseline_imprecise=imprecise,
         )
         with self._lock:
+            current = self._state.accounts.get(account_name)
+            if current is not None and current.trade_date == today:
+                # Lost the race — another thread already captured for today
+                return
             self._state.accounts[account_name] = new_state
             self._state.save()
         self._audit.append(

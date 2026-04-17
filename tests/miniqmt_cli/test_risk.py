@@ -179,6 +179,10 @@ def test_baseline_capture_failure_raises(tmp_path):
     with pytest.raises(BaselineUnavailable):
         rm.ensure_baseline("sim")
     assert "sim" not in rm._state.accounts
+    # Fail-closed: no audit row written when baseline fails
+    audit_path = tmp_path / "orders.jsonl"
+    if audit_path.exists():
+        assert "risk_baseline_capture" not in audit_path.read_text()
 
 
 def test_baseline_audit_row_written(tmp_path):
