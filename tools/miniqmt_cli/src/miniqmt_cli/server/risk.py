@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -108,6 +108,22 @@ def _capture_is_imprecise() -> bool:
     return now >= _time(9, 30)
 
 
+SNAPSHOT_TTL = 30.0
+SNAPSHOT_HARD_EXPIRY = 300.0
+
+
+class SnapshotStale(RuntimeError):
+    """Raised when snapshot can't be refreshed and hard expiry is exceeded."""
+
+
+@dataclass
+class AccountSnapshot:
+    total_asset: float
+    positions_by_code: Dict[str, Dict[str, Any]]
+    refreshed_at: float
+    stale: bool = False
+
+
 class RiskManager:
     def __init__(
         self,
@@ -119,6 +135,7 @@ class RiskManager:
         self._audit = audit
         self._xttrader_ctx = xttrader_ctx
         self._state = RiskStateFile.load(cfg.resolved_risk_state_path())
+        self._snapshots: Dict[str, AccountSnapshot] = {}
         self._lock = threading.Lock()
 
     def ensure_baseline(self, account_name: str) -> None:
@@ -163,4 +180,53 @@ class RiskManager:
             trade_date=today,
             baseline_total_asset=total,
             imprecise=imprecise,
+        )
+
+    def get_snapshot(self, account_name: str) -> AccountSnapshot:
+        """Return a fresh-enough snapshot, refreshing if stale or past TTL.
+
+        Locking discipline: NEVER hold self._lock during xtquant queries
+        (they block for 50-400ms). Lock only for the dict assignment.
+        """
+        snap = self._snapshots.get(account_name)
+        now = time.monotonic()
+        needs_refresh = (
+            snap is None
+            or snap.stale
+            or (now - snap.refreshed_at) > SNAPSHOT_TTL
+        )
+        if not needs_refresh:
+            return snap
+
+        try:
+            new_snap = self._do_refresh(account_name)
+        except Exception as e:
+            if snap is not None and (now - snap.refreshed_at) <= SNAPSHOT_HARD_EXPIRY:
+                log.warning(
+                    "snapshot refresh failed for %s (%s); using stale snapshot age=%.1fs",
+                    account_name, e, now - snap.refreshed_at,
+                )
+                return snap
+            raise SnapshotStale(
+                f"snapshot refresh failed and no usable cache: {e}"
+            ) from e
+
+        with self._lock:
+            self._snapshots[account_name] = new_snap
+        return new_snap
+
+    def _do_refresh(self, account_name: str) -> AccountSnapshot:
+        trader, acc = self._xttrader_ctx(account_name)
+        from miniqmt_cli.server import xttrader_adapter
+        asset = xttrader_adapter.query_stock_asset(trader, acc)
+        positions = xttrader_adapter.query_stock_positions(trader, acc)
+        return AccountSnapshot(
+            total_asset=float(asset.get("total_asset", 0.0)),
+            positions_by_code={
+                p.get("stock_code", ""): p
+                for p in positions
+                if p.get("stock_code")
+            },
+            refreshed_at=time.monotonic(),
+            stale=False,
         )

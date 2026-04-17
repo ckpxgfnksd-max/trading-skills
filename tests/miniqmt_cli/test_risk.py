@@ -198,3 +198,84 @@ def test_baseline_audit_row_written(tmp_path):
     assert len(captures) == 1
     assert captures[0]["account"] == "sim"
     assert captures[0]["baseline_total_asset"] == 1000000.0
+
+
+def test_snapshot_refresh_populates_cache(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    ctx.trader.positions_override = [
+        {"stock_code": "000001.SZ", "volume": 500, "market_value": 5000.0}
+    ]
+    rm = RiskManager(cfg, audit, ctx)
+    snap = rm.get_snapshot("sim")
+    assert snap.total_asset == 1000000.0
+    assert snap.positions_by_code["000001.SZ"]["volume"] == 500
+
+
+def test_snapshot_reused_within_ttl(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    s1 = rm.get_snapshot("sim")
+    ctx.trader.asset_override = {"total_asset": 999999.0}
+    s2 = rm.get_snapshot("sim")  # within 30s
+    assert s2.total_asset == 1000000.0
+    assert s1 is s2
+
+
+def test_snapshot_invalidated_by_stale_flag(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 1000000.0}
+    rm = RiskManager(cfg, audit, ctx)
+    s1 = rm.get_snapshot("sim")
+    s1.stale = True
+    ctx.trader.asset_override = {"total_asset": 999999.0}
+    s2 = rm.get_snapshot("sim")
+    assert s2.total_asset == 999999.0
+    assert s2 is not s1
+
+
+def test_snapshot_ttl_expiry(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    t = [1000.0]
+    monkeypatch.setattr(risk_mod.time, "monotonic", lambda: t[0])
+    rm = RiskManager(cfg, audit, ctx)
+    rm.get_snapshot("sim")
+    t[0] = 1031.0  # >30s later
+    ctx.trader.asset_override = {"total_asset": 200.0}
+    s2 = rm.get_snapshot("sim")
+    assert s2.total_asset == 200.0
+
+
+def test_snapshot_hard_expiry_raises_when_refresh_fails(tmp_path, monkeypatch):
+    from miniqmt_cli.server import risk as risk_mod
+    from miniqmt_cli.server.risk import RiskManager, SnapshotStale
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    t = [1000.0]
+    monkeypatch.setattr(risk_mod.time, "monotonic", lambda: t[0])
+    rm = RiskManager(cfg, audit, ctx)
+    rm.get_snapshot("sim")
+    ctx.trader.should_fail_asset_query = True
+    t[0] = 1035.0  # >30s, triggers refresh; refresh fails -> stale fallback
+    snap = rm.get_snapshot("sim")
+    assert snap.total_asset == 100.0   # stale-but-within-hard-expiry
+    t[0] = 1400.0  # >5 min since last successful refresh
+    with pytest.raises(SnapshotStale):
+        rm.get_snapshot("sim")
