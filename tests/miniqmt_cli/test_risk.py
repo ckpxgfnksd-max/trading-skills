@@ -279,3 +279,96 @@ def test_snapshot_hard_expiry_raises_when_refresh_fails(tmp_path, monkeypatch):
     t[0] = 1400.0  # >5 min since last successful refresh
     with pytest.raises(SnapshotStale):
         rm.get_snapshot("sim")
+
+
+def test_record_accepted_buy_adds_to_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=200)
+    e = rm._pending["sim"]["000001.SZ"]
+    assert e.buy_volume == 500
+    assert e.buy_amount == 5000.0
+    assert e.by_order_id[200] == {"volume": 500, "amount": 5000.0}
+
+
+def test_record_accepted_sell_does_not_add_to_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "sell", "000001.SZ", 100, 10.0, order_id=201)
+    assert "sim" not in rm._pending or not rm._pending["sim"].get("000001.SZ")
+
+
+def test_record_accepted_adds_frequency_window_entry(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=200)
+    assert len(rm._order_window["sim"]) == 1
+
+
+def test_order_status_filled_removes_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=200)
+    rm.on_trade_event({
+        "type": "order_status", "account": "sim", "order_id": 200,
+        "status": "filled", "code": "000001.SZ", "side": "buy",
+        "volume": 500, "filled_volume": 500, "avg_price": 10.0,
+    })
+    assert "000001.SZ" not in rm._pending.get("sim", {})
+
+
+def test_order_status_partial_fill_reduces_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=200)
+    rm.on_trade_event({
+        "type": "order_status", "account": "sim", "order_id": 200,
+        "status": "partially_filled", "volume": 500, "filled_volume": 300,
+    })
+    e = rm._pending["sim"]["000001.SZ"]
+    assert e.buy_volume == 200
+    assert e.buy_amount == 2000.0
+
+
+def test_order_status_cancelled_removes_pending(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.record_accepted("sim", "buy", "000001.SZ", 500, 10.0, order_id=200)
+    rm.on_trade_event({
+        "type": "order_status", "account": "sim", "order_id": 200,
+        "status": "cancelled", "volume": 500, "filled_volume": 0,
+    })
+    assert "000001.SZ" not in rm._pending.get("sim", {})
+
+
+def test_trade_event_marks_snapshot_stale(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    ctx = _FakeTraderCtx()
+    ctx.trader.asset_override = {"total_asset": 100.0}
+    rm = RiskManager(cfg, audit, ctx)
+    snap = rm.get_snapshot("sim")
+    rm.on_trade_event({"type": "trade", "account": "sim", "order_id": 200})
+    assert snap.stale is True
+
+
+def test_unknown_account_event_ignored(tmp_path):
+    from miniqmt_cli.server.risk import RiskManager
+    cfg = _make_cfg(tmp_path)
+    audit = AuditLog(tmp_path / "orders.jsonl")
+    rm = RiskManager(cfg, audit, _FakeTraderCtx())
+    rm.on_trade_event({"type": "trade", "account": "ghost", "order_id": 1})
+    # Should not raise

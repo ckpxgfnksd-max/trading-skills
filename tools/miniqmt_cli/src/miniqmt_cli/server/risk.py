@@ -6,10 +6,11 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -124,6 +125,13 @@ class AccountSnapshot:
     stale: bool = False
 
 
+@dataclass
+class PendingEntry:
+    buy_volume: int = 0
+    buy_amount: float = 0.0
+    by_order_id: Dict[int, Dict[str, float]] = field(default_factory=dict)
+
+
 class RiskManager:
     def __init__(
         self,
@@ -136,6 +144,9 @@ class RiskManager:
         self._xttrader_ctx = xttrader_ctx
         self._state = RiskStateFile.load(cfg.resolved_risk_state_path())
         self._snapshots: Dict[str, AccountSnapshot] = {}
+        self._pending: Dict[str, Dict[str, PendingEntry]] = {}
+        self._order_window: Dict[str, Deque[float]] = {}
+        self._pending_rebuilt: Set[str] = set()
         self._lock = threading.Lock()
 
     def ensure_baseline(self, account_name: str) -> None:
@@ -230,3 +241,87 @@ class RiskManager:
             refreshed_at=time.monotonic(),
             stale=False,
         )
+
+    def record_accepted(
+        self, account: str, side: str, code: str, volume: int,
+        price: float, order_id: int,
+    ) -> None:
+        """Call after an order is accepted by xttrader. Updates frequency
+        window; for buys, adds to pending tracking by order_id.
+        """
+        with self._lock:
+            self._order_window.setdefault(account, deque()).append(time.monotonic())
+            if side == "buy":
+                entries = self._pending.setdefault(account, {})
+                entry = entries.setdefault(code, PendingEntry())
+                entry.buy_volume += volume
+                entry.buy_amount += volume * price
+                entry.by_order_id[order_id] = {
+                    "volume": volume, "amount": volume * price,
+                }
+
+    def on_trade_event(self, event: dict) -> None:
+        """Called from xtquant callback thread. Fan-in point for order_status
+        and trade events. Safe to call with events for unknown accounts.
+        """
+        account = event.get("account")
+        if not account or account not in self._cfg.accounts:
+            return
+        evt_type = event.get("type")
+        if evt_type == "order_status":
+            self._handle_order_status(event)
+        elif evt_type == "trade":
+            with self._lock:
+                snap = self._snapshots.get(account)
+                if snap:
+                    snap.stale = True
+
+    def _handle_order_status(self, event: dict) -> None:
+        status = event.get("status")
+        order_id = event.get("order_id")
+        account = event.get("account")
+        if order_id is None:
+            return
+        if status in {"filled", "cancelled", "rejected", "expired"}:
+            self._remove_pending_by_order_id(account, int(order_id))
+        elif status == "partially_filled":
+            remaining = max(
+                int(event.get("volume", 0)) - int(event.get("filled_volume", 0)),
+                0,
+            )
+            self._reduce_pending_to_remaining(account, int(order_id), remaining)
+
+    def _remove_pending_by_order_id(self, account: str, order_id: int) -> None:
+        with self._lock:
+            codes = self._pending.get(account, {})
+            for code, entry in list(codes.items()):
+                if order_id in entry.by_order_id:
+                    removed = entry.by_order_id.pop(order_id)
+                    entry.buy_volume -= int(removed["volume"])
+                    entry.buy_amount -= float(removed["amount"])
+                    if entry.buy_volume <= 0:
+                        del codes[code]
+                    break
+
+    def _reduce_pending_to_remaining(
+        self, account: str, order_id: int, remaining_volume: int,
+    ) -> None:
+        with self._lock:
+            codes = self._pending.get(account, {})
+            for code, entry in list(codes.items()):
+                if order_id in entry.by_order_id:
+                    old = entry.by_order_id[order_id]
+                    old_vol = int(old["volume"])
+                    old_amt = float(old["amount"])
+                    if old_vol <= 0:
+                        return
+                    price_per = old_amt / old_vol
+                    new_amt = remaining_volume * price_per
+                    entry.by_order_id[order_id] = {
+                        "volume": remaining_volume, "amount": new_amt,
+                    }
+                    entry.buy_volume += (remaining_volume - old_vol)
+                    entry.buy_amount += (new_amt - old_amt)
+                    if entry.buy_volume <= 0:
+                        del codes[code]
+                    break
