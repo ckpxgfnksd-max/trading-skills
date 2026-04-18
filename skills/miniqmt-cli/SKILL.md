@@ -84,15 +84,18 @@ miniqmt-cli stream order --account sim
 miniqmt-cli --format json stream order --account sim
 ```
 
-Event payload shape (JSON mode):
+Event payload shape (JSON mode). The **first** line after subscription is an envelope, then each order state change emits an `order_status` dict:
 
 ```json
-{"event": "order", "account": "sim", "order_id": 12345, "code": "000001.SZ",
- "side": "buy", "status": "filled", "filled_volume": 100, "avg_price": 10.48,
- "ts": "2026-04-18T09:31:12"}
+{"event": "subscribed", "filter_account": "sim"}
+{"type": "order_status", "account": "sim", "order_id": 12345, "code": "000001.SZ",
+ "side": "buy", "status": "filled", "volume": 100, "filled_volume": 100,
+ "avg_price": 10.48, "frozen": 0.0}
 ```
 
-Statuses: `submitted`, `partial`, `filled`, `cancelled`, `rejected`.
+Also emitted on the same stream: `{"type": "order_response", ...}` (async submit ack) and `{"type": "trade", ..., "trade_id": ..., "price": ..., "amount": ...}` (per-fill detail).
+
+Possible `status` values (from xtquant `order_status`): `submitted`, `confirmed`, `partially_filled`, `filled`, `cancelled`, `rejected`, `expired`, `pending_cancel`, `unknown`. Unknown codes are returned as `unknown_<n>` — agents should have a default branch.
 
 ### Account & Portfolio
 
@@ -257,7 +260,7 @@ Quick map (full list in `skills/miniqmt-http-api/SKILL.md`):
 | `order buy/sell` | `POST /trade/order` |
 | `order cancel` | `POST /trade/cancel` |
 | `risk status` / `reset` | `GET /risk/status` / `POST /risk/reset` |
-| `stream tick/kline/order` | `GET /stream/tick` / `/kline` / `/order` (SSE) |
+| `stream tick/kline/order` | `GET /stream/tick` / `/stream/kline` / `/stream/order` (SSE) |
 | `health` | `GET /health` |
 
 ## SSH Tunnel
