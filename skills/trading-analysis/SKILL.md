@@ -85,6 +85,52 @@ trading-analysis moneyflow --code 002028.SZ --live --interval 30
 - Single stock: full four-tier table, updated in-place
 - Multiple stocks: compact ranking table sorted by main force net inflow
 - Requires market hours for meaningful data; outside trading hours the display will show zeros
+- Combine with `--signal` to get alert-on-trigger behavior; see **Signal Expressions** below.
+
+## Signal Expressions (`--signal`)
+
+Live mode supports a minimal expression language for triggering alerts when conditions are met. The expression is evaluated every refresh interval against the running per-stock state.
+
+```bash
+# Alert when main force is net buying AND price is above MA20
+trading-analysis moneyflow --code 002028.SZ --live \
+  --signal "main_net > 0 and price > ma20"
+
+# Alert on a reversal signal
+trading-analysis moneyflow --code 002028.SZ --live \
+  --signal "main_net > 500000 and ma5 > ma20"
+
+# Multiple stocks — signal is evaluated per code independently
+trading-analysis moneyflow --code 002028.SZ --code 000859.SZ --live \
+  --signal "main_net > 0"
+```
+
+**Variables** (all in yuan unless noted):
+
+| Variable | Meaning |
+|----------|---------|
+| `main_net` | Main force net inflow (xlarge + large tiers) |
+| `retail_net` | Retail net inflow (medium + small tiers) |
+| `price` | Latest tick `lastPrice` |
+| `ma5` / `ma10` / `ma20` / `ma60` | Simple moving average of that many 1-minute closes |
+
+**Operators**: `>`, `<`, `>=`, `<=`, `==`, `and`, `or` (lowercase only).
+
+**Literals**: integers and floats; numbers are in yuan (e.g. `500000` = 50 wan).
+
+**Semantics**:
+
+- If any referenced variable is `None` (e.g. MA window not yet filled), the signal is **not triggered** — no false positives during warm-up.
+- MA windows are auto-detected from the expression; `ma20` triggers a preload of 20 1-minute klines before the live loop starts.
+- Trigger flips edge-sensitive: the alert fires once when `False → True`. It re-arms when the expression goes back to `False`.
+
+**Output**: when triggered, the live display prints a red banner `>>> 002028.SZ 信号触发: <expr> <<<` and the footer shows "已触发: [codes]". On Ctrl+C exit, a final summary lists which codes ever triggered.
+
+**Limitations**:
+
+- No parentheses — precedence is strictly `cmp → and → or` with left-to-right evaluation.
+- No arithmetic (`+`, `-`, `*`, `/`) inside expressions — compare variables to literal thresholds only.
+- No historical lookback beyond the MA window (no "price N minutes ago").
 
 ## Parameter Reference
 
