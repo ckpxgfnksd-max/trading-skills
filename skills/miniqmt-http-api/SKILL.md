@@ -96,11 +96,13 @@ All three endpoints are **Server-Sent Events**. Each message is `data: <json>\n\
 | 404  | `"unknown account: <name>"` | `account` not in whitelist |
 | 400  | `"confirm_live_last4 required for live account"` (on `/risk/reset`) or `"live account requires confirm_live_last4 matching last 4 digits of account_id"` (on `/trade/order`) | Live account without confirmation |
 | 400  | `"confirm_live_last4 does not match"` (risk reset) or `"confirm_live_last4 does not match account_id last 4"` (trade order) | Confirmation digits wrong |
-| 409  | `"risk: <reason>"` | Risk check rejected (e.g. `breaker_tripped`, `position_pct_exceeded`, `daily_loss_exceeded`, `frequency_exceeded`, `max_positions_exceeded`) |
-| 502  | `"broker reject: <reason>"` | xtquant-level rejection (market closed, invalid code, insufficient funds) |
-| 503  | `"daemon not ready: <state>"` | Health state is not `ready` |
+| 400  | `{"error": "risk_reject", "code": <reject_code>, "message": <reject_detail>}` (structured dict in `detail`) | Risk check rejected. `code` values include `breaker_tripped`, `position_pct_exceeded`, `daily_loss_exceeded`, `frequency_exceeded`, `max_positions_exceeded` |
+| 500  | `"trader login failed: <err>"` | Could not log in to xtquant for this account |
+| 500  | `"order_stock failed: <err>"` / `"cancel_order_stock failed: <err>"` | xtquant-level failure during submit/cancel |
 
-**Risk rejections are the important ones for agents.** The `reason` string is stable and can be matched against to decide whether to retry, back off, or surface to the user.
+**Risk rejections are the important ones for agents.** The `code` field is stable and can be matched against to decide whether to retry, back off, or surface to the user. Note the rejection carries HTTP 400 with a **structured dict** in `detail`, not a plain string.
+
+For broker-level rejections (market closed, invalid code, insufficient funds), xtquant surfaces the error synchronously as an `order_stock failed` 500, or asynchronously via the `/stream/order` event with `status=rejected`.
 
 ## Idempotency & Reconciliation
 
