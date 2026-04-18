@@ -75,6 +75,25 @@ miniqmt-cli stream tick --code 000001.SZ --code 600519.SH
 miniqmt-cli stream kline --code 000001.SZ --period 1m
 ```
 
+```bash
+# Stream order lifecycle events (submitted / partially filled / filled / cancelled / rejected)
+# Essential for agents: subscribe before placing an order, then consume fill/reject events.
+miniqmt-cli stream order --account sim
+
+# JSON format for programmatic parsing
+miniqmt-cli --format json stream order --account sim
+```
+
+Event payload shape (JSON mode):
+
+```json
+{"event": "order", "account": "sim", "order_id": 12345, "code": "000001.SZ",
+ "side": "buy", "status": "filled", "filled_volume": 100, "avg_price": 10.48,
+ "ts": "2026-04-18T09:31:12"}
+```
+
+Statuses: `submitted`, `partial`, `filled`, `cancelled`, `rejected`.
+
 ### Account & Portfolio
 
 ```bash
@@ -123,6 +142,52 @@ miniqmt-cli order cancel --account sim --order-id 12345 --yes
 ```
 
 Order types: `--type limit` (default) or `--type market`.
+
+### Risk Control
+
+The daemon enforces risk limits independently (v0.2.0+). When a limit trips, the breaker enters **block-open-allow-close** mode: new opening orders are rejected, but closing / cancel operations still work.
+
+```bash
+# Show risk status for one account (baseline, PnL, breaker state, pending orders)
+miniqmt-cli risk status --account sim
+
+# Show all accounts
+miniqmt-cli risk status
+
+# JSON for agents
+miniqmt-cli --format json risk status --account sim
+
+# Reset the breaker (operator action — requires a justification note)
+miniqmt-cli risk reset --account sim --note "false positive: baseline re-captured"
+
+# Live account reset requires last-4-digit confirmation
+miniqmt-cli risk reset --account live --note "manual unfreeze" --confirm-live 1234
+```
+
+`risk status` fields of interest:
+
+| Field | Meaning |
+|-------|---------|
+| `baseline_total_asset` | Opening snapshot asset at session start |
+| `baseline_imprecise` | `true` if baseline was captured after first trade (less reliable) |
+| `current_total_asset` | Latest cached asset |
+| `daily_pnl` | `current - baseline` |
+| `breaker_tripped` | Boolean — if true, `breaker_reason` explains which limit |
+| `pending_orders` | Map of `code -> {buy_volume, buy_amount, sell_volume, sell_amount}` |
+| `orders_in_window` | Count of orders in the rolling 60s frequency window |
+
+`server.toml` `[risk]` defaults:
+
+```toml
+[risk]
+enabled = true
+max_daily_loss = 50000          # yuan
+max_position_pct = 30           # % of total asset per single stock
+max_orders_per_minute = 10
+max_positions = 10
+```
+
+Per-account overrides live in `[accounts.<name>.risk]`.
 
 ### Daemon Management
 
@@ -177,6 +242,23 @@ Restart the daemon on Windows:
 ```bash
 ssh <user>@<windows-host> "schtasks /run /tn MiniqmtDaemon"
 ```
+
+## HTTP API (for external agents)
+
+Every CLI command hits a JSON HTTP endpoint on the daemon. Agents that don't want to shell out to Click can call the HTTP surface directly — see the dedicated **miniqmt-http-api** skill for the full endpoint reference, payload shapes, and error codes.
+
+Quick map (full list in `skills/miniqmt-http-api/SKILL.md`):
+
+| CLI | HTTP |
+|-----|------|
+| `tick` / `kline` / `ticks` | `GET /data/tick` / `/data/kline` / `/data/ticks` |
+| `account asset/position/orders/trades` | `GET /trade/asset` / `/positions` / `/orders` / `/trades` |
+| `order buy/sell --dry-run` | `GET /trade/preview` |
+| `order buy/sell` | `POST /trade/order` |
+| `order cancel` | `POST /trade/cancel` |
+| `risk status` / `reset` | `GET /risk/status` / `POST /risk/reset` |
+| `stream tick/kline/order` | `GET /stream/tick` / `/kline` / `/order` (SSE) |
+| `health` | `GET /health` |
 
 ## SSH Tunnel
 
