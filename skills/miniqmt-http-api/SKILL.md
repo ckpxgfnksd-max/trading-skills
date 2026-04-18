@@ -22,9 +22,9 @@ All responses are JSON unless the endpoint is SSE (noted below). All requests th
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/version` | Daemon build version |
-| GET | `/health` | `{"state": "ready" \| "daemon_up_no_trader" \| "daemon_up_xtquant_missing" \| "daemon_up_baseline_pending", "risk_breaker_tripped": bool}` |
+| GET | `/health` | Returns `{"state": <state>}` plus state-specific extras. Possible `state` values: `"ready"`, `"risk_breaker_tripped"` (extras: `tripped_accounts: [...]`), `"daemon_up_xtquant_missing"` (extras: `error`), `"daemon_up_no_trader"`, `"daemon_up_baseline_pending"` (extras: `accounts_pending`). When `--dry-run`, includes `"dry_run": true`. |
 
-Agents should verify `/health` returns `state == "ready"` **and** `risk_breaker_tripped == false` before trading.
+Agents must check `state == "ready"` before trading. Any other state (especially `"risk_breaker_tripped"`) means halt.
 
 ### Market Data (`/data/*`)
 
@@ -75,7 +75,7 @@ Agents should verify `/health` returns `state == "ready"` **and** `risk_breaker_
 | Method | Path | Query / Body | Returns |
 |--------|------|--------------|---------|
 | GET | `/risk/status` | `account` (optional) | Per-account state (see `miniqmt-cli` skill → Risk Control for field meanings) |
-| POST | `/risk/reset` | `{account, note, confirm_live_last4?}` | `{ok, reset_count_today}` |
+| POST | `/risk/reset` | `{account, operator_note (1-200 chars), confirm_live_last4?}` | Reset result dict from `RiskManager.reset_breaker()` — confirms the reset succeeded. |
 
 ### Streaming / SSE (`/stream/*`)
 
@@ -83,8 +83,8 @@ All three endpoints are **Server-Sent Events**. Each message is `data: <json>\n\
 
 | Path | Query | Event shape |
 |------|-------|-------------|
-| `/stream/tick` | `code` (repeatable) | `{"event": "tick", "code": ..., "lastPrice": ..., ...}` |
-| `/stream/kline` | `code` (repeatable), `period` | `{"event": "kline", "code": ..., "open": ..., "close": ..., ...}` |
+| `/stream/tick` | `code` (repeatable) | First line is an envelope `{"event": "subscribed", "codes": [...], "seqs": [...]}`; subsequent messages are `{"tick": <raw xtquant tick dict>}` (with optional `"dropped": <count>` when backpressure kicks in). |
+| `/stream/kline` | `code` (repeatable), `period` | First line is an envelope `{"event": "subscribed", "codes": [...], "seqs": [...], "period": ...}`; subsequent messages are `{"bar": <raw xtquant kline dict>}`. |
 | `/stream/order` | `account` (optional) | First line is an envelope `{"event": "subscribed", "filter_account": ...}`; subsequent messages are `{"type": "order_status", "account": ..., "order_id": ..., "status": ..., "code": ..., "side": ..., "volume": ..., "filled_volume": ..., "avg_price": ..., "frozen": ...}`. Other types: `order_response`, `trade`. |
 
 `/stream/order` `status` values: `submitted`, `confirmed`, `partially_filled`, `filled`, `cancelled`, `rejected`, `expired`, `pending_cancel`, `unknown`, `unknown_<n>`.
@@ -93,9 +93,9 @@ All three endpoints are **Server-Sent Events**. Each message is `data: <json>\n\
 
 | HTTP | Body `detail` | Meaning |
 |--------|----------------|---------|
-| 400  | `"unknown account"` | `account` not in whitelist |
-| 400  | `"confirm_live_last4 required"` | Live account without confirmation |
-| 400  | `"confirm_live_last4 mismatch"` | Confirmation digits wrong |
+| 404  | `"unknown account: <name>"` | `account` not in whitelist |
+| 400  | `"confirm_live_last4 required for live account"` (on `/risk/reset`) or `"live account requires confirm_live_last4 matching last 4 digits of account_id"` (on `/trade/order`) | Live account without confirmation |
+| 400  | `"confirm_live_last4 does not match"` (risk reset) or `"confirm_live_last4 does not match account_id last 4"` (trade order) | Confirmation digits wrong |
 | 409  | `"risk: <reason>"` | Risk check rejected (e.g. `breaker_tripped`, `position_pct_exceeded`, `daily_loss_exceeded`, `frequency_exceeded`, `max_positions_exceeded`) |
 | 502  | `"broker reject: <reason>"` | xtquant-level rejection (market closed, invalid code, insufficient funds) |
 | 503  | `"daemon not ready: <state>"` | Health state is not `ready` |
