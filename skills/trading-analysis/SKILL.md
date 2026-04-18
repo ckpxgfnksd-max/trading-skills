@@ -190,3 +190,9 @@ Multiple stocks append a ranking:
 | 大单/超大单 always 0 | 3-second avg too small to hit threshold | Lower thresholds: `--thresholds 2,10,50` |
 | Live mode shows all zeros | Outside trading hours, no new ticks | Run during market hours (09:30-15:00) |
 | Live mode not updating | Daemon not returning fresh snapshots | Check `miniqmt-cli health`; ensure miniQMT client is open |
+
+## Related Skills
+
+- **miniqmt-cli** — The daemon and data source underneath
+- **miniqmt-http-api** — HTTP/SSE endpoints used by this tool
+- **auto-trading-loop** — How to compose analysis + orders into a trading loop

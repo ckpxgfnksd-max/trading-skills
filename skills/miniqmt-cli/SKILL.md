@@ -333,3 +333,9 @@ Env overrides: `MINIQMT_CLI_SERVER_HOST`, `MINIQMT_CLI_SERVER_PORT`, `MINIQMT_CL
 | 1 | Generic error |
 | 2 | Broker rejected the order (`BrokerReject`) |
 | 3 | Safety guard refused to proceed (`GuardExit`) |
+
+## Related Skills
+
+- **miniqmt-http-api** — HTTP/SSE endpoint reference for programmatic callers
+- **trading-analysis** — Money flow + signals built on top of `/data/ticks`
+- **auto-trading-loop** — Top-level playbook for external AI agents
