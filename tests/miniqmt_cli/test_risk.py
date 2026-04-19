@@ -93,7 +93,7 @@ def _make_cfg(tmp_path, **overrides) -> ServerConfig:
         risk=RiskConfig(**overrides),
     )
     cfg.accounts["sim"] = AccountConfig(
-        name="sim", account_id="55001234", account_type="STOCK",
+        name="sim", account_id="1230001", account_type="STOCK",
     )
     return cfg
 
@@ -104,7 +104,7 @@ class _FakeTraderCtx:
     def __init__(self):
         from tests.fakes.xtquant_stub import FakeStockAccount, FakeTrader
         self.trader = FakeTrader("/tmp", 42)
-        self.acc = FakeStockAccount(account_id="55001234", account_type="STOCK")
+        self.acc = FakeStockAccount(account_id="1230001", account_type="STOCK")
 
     def __call__(self, account_name: str):
         return (self.trader, self.acc)

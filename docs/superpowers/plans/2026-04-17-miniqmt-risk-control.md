@@ -60,7 +60,7 @@ def test_effective_risk_uses_global_when_no_override(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nmax_daily_loss = 12345\n'
-        '[accounts.sim]\naccount_id = "55001234"\n',
+        '[accounts.sim]\naccount_id = "1230001"\n',
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))
@@ -75,7 +75,7 @@ def test_effective_risk_field_level_override(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nmax_daily_loss = 50000\nmax_position_pct = 30\n'
-        '[accounts.live]\naccount_id = "88881234"\n'
+        '[accounts.live]\naccount_id = "1230002"\n'
         '[accounts.live.risk]\nmax_daily_loss = 10000\n',
         encoding="utf-8",
     )
@@ -97,7 +97,7 @@ def test_risk_disabled_flag(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nenabled = false\n'
-        '[accounts.sim]\naccount_id = "55001234"\n',
+        '[accounts.sim]\naccount_id = "1230001"\n',
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))
@@ -619,7 +619,7 @@ def _make_cfg(tmp_path, **overrides) -> ServerConfig:
         risk=RiskConfig(**overrides),
     )
     cfg.accounts["sim"] = AccountConfig(
-        name="sim", account_id="55001234", account_type="STOCK",
+        name="sim", account_id="1230001", account_type="STOCK",
     )
     return cfg
 
@@ -630,7 +630,7 @@ class _FakeTraderCtx:
     def __init__(self):
         from tests.fakes.xtquant_stub import FakeStockAccount, FakeTrader
         self.trader = FakeTrader("/tmp", 42)
-        self.acc = FakeStockAccount(account_id="55001234", account_type="STOCK")
+        self.acc = FakeStockAccount(account_id="1230001", account_type="STOCK")
 
     def __call__(self, account_name: str):
         return (self.trader, self.acc)
@@ -2625,11 +2625,11 @@ qmt_path = "C:/国金QMT交易端/userdata_mini"
 # session_id = 123456  # omit to use os.getpid()
 
 [accounts.sim]
-account_id = "55001234"
+account_id = "1230001"
 account_type = "STOCK"
 
 # [accounts.live]
-# account_id = "88881234"
+# account_id = "1230002"
 # account_type = "STOCK"
 # requires_confirm_live = true
 

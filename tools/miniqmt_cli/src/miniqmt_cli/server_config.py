@@ -156,11 +156,11 @@ qmt_path = "C:/国金QMT交易端/userdata_mini"
 # session_id = 123456  # omit to use os.getpid()
 
 [accounts.sim]
-account_id = "55001234"
+account_id = "1230001"
 account_type = "STOCK"
 
 # [accounts.live]
-# account_id = "88881234"
+# account_id = "1230002"
 # account_type = "STOCK"
 # requires_confirm_live = true
 

@@ -32,9 +32,9 @@ def test_server_config_reads_accounts(tmp_path):
     cfg_path.write_text(
         '[server]\nhost = "0.0.0.0"\nport = 9000\nqmt_path = "/tmp/qmt"\n'
         "\n[accounts.sim]\n"
-        'account_id = "55001234"\naccount_type = "STOCK"\n'
+        'account_id = "1230001"\naccount_type = "STOCK"\n'
         "\n[accounts.live]\n"
-        'account_id = "88881234"\nrequires_confirm_live = true\n'
+        'account_id = "1230002"\nrequires_confirm_live = true\n'
     )
     cfg = load_server_config(str(cfg_path))
     assert cfg.host == "0.0.0.0"
@@ -62,7 +62,7 @@ def test_session_id_defaults_to_pid(tmp_path):
 
 def test_account_masked_id():
     from miniqmt_cli.server_config import AccountConfig
-    acc = AccountConfig(name="live", account_id="88881234")
+    acc = AccountConfig(name="live", account_id="1230002")
     assert acc.masked_id().endswith("1234")
     assert "*" in acc.masked_id()
 
@@ -83,7 +83,7 @@ def test_effective_risk_uses_global_when_no_override(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nmax_daily_loss = 12345\n'
-        '[accounts.sim]\naccount_id = "55001234"\n',
+        '[accounts.sim]\naccount_id = "1230001"\n',
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))
@@ -98,7 +98,7 @@ def test_effective_risk_field_level_override(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nmax_daily_loss = 50000\nmax_position_pct = 30\n'
-        '[accounts.live]\naccount_id = "88881234"\n'
+        '[accounts.live]\naccount_id = "1230002"\n'
         '[accounts.live.risk]\nmax_daily_loss = 10000\n',
         encoding="utf-8",
     )
@@ -125,7 +125,7 @@ def test_risk_disabled_flag(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nenabled = false\n'
-        '[accounts.sim]\naccount_id = "55001234"\n',
+        '[accounts.sim]\naccount_id = "1230001"\n',
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))
@@ -160,7 +160,7 @@ def test_risk_config_snapshot_timings_configurable(tmp_path):
     p.write_text(
         '[server]\nqmt_path = "/tmp"\n'
         '[risk]\nsnapshot_ttl_seconds = 10\nsnapshot_hard_expiry_seconds = 120\n'
-        '[accounts.sim]\naccount_id = "55001234"\n',
+        '[accounts.sim]\naccount_id = "1230001"\n',
         encoding="utf-8",
     )
     cfg = load_server_config(str(p))

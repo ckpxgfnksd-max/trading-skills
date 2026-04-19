@@ -109,7 +109,7 @@ def test_live_gate_wrong_last4(client, server_cfg, fake_xtquant):
 
 
 def test_live_gate_correct_last4(client, server_cfg, fake_xtquant):
-    # server_cfg.accounts["live"] has account_id 88881234 -> last4 == "1234"
+    # server_cfg.accounts["live"] has account_id 1230002 -> last4 == "1234"
     resp = client.post(
         "/trade/order",
         json=_body(account="live", confirm_live_last4="1234", client_req_id="req-lg3"),

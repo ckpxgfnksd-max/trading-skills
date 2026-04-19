@@ -33,10 +33,10 @@ def server_cfg(tmp_path) -> ServerConfig:
         risk_state_path=str(tmp_path / "risk_state.json"),
     )
     cfg.accounts["sim"] = AccountConfig(
-        name="sim", account_id="55001234", account_type="STOCK",
+        name="sim", account_id="1230001", account_type="STOCK",
     )
     cfg.accounts["live"] = AccountConfig(
-        name="live", account_id="88881234", account_type="STOCK",
+        name="live", account_id="1230002", account_type="STOCK",
         requires_confirm_live=True,
     )
     return cfg

@@ -254,7 +254,7 @@ Three layers of defense, **all enforced independently at both CLI and daemon**. 
 4. CLI generates a `client_req_id` (UUIDv4) for this attempt and remembers it; on retry after a network error the CLI **reuses** the same id.
 5. CLI prints a confirmation table:
    ```
-   Account:   sim (55001234)
+   Account:   sim (1230001)
    Code:      000001.SZ  平安银行
    Side:      BUY
    Volume:    100
@@ -287,7 +287,7 @@ Three layers of defense, **all enforced independently at both CLI and daemon**. 
 
 ```json
 {"ts":"2026-04-14T02:23:41.284Z","phase":"pre","client_req_id":"5f2a...",
- "account":"sim","account_id":"55001234","code":"000001.SZ",
+ "account":"sim","account_id":"1230001","code":"000001.SZ",
  "side":"buy","volume":100,"price":12.34,"type":"limit","confirm_live_last4":null}
 {"ts":"2026-04-14T02:23:41.319Z","phase":"post","client_req_id":"5f2a...",
  "order_id":"12345","seq":7,"status":"ok"}
@@ -351,11 +351,11 @@ qmt_path = "C:/国金QMT交易端/userdata_mini"
 session_id = 123456
 
 [accounts.sim]
-account_id = "55001234"
+account_id = "1230001"
 account_type = "STOCK"                # STOCK | CREDIT | FUTURE
 
 [accounts.live]
-account_id = "88881234"
+account_id = "1230002"
 account_type = "STOCK"
 requires_confirm_live = true
 

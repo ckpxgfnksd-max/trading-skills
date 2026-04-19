@@ -301,11 +301,11 @@ port = 8765
 qmt_path = "C:/国金QMT交易端/userdata_mini"
 
 [accounts.sim]
-account_id = "55001234"
+account_id = "1230001"
 account_type = "STOCK"
 
 [accounts.real]                       # real-money account; name is arbitrary
-account_id = "88881234"
+account_id = "1230002"
 account_type = "STOCK"
 requires_confirm_live = true          # marks this as a "live account" — extra confirmation required
 
