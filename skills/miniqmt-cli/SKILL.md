@@ -338,4 +338,3 @@ Env overrides: `MINIQMT_CLI_SERVER_HOST`, `MINIQMT_CLI_SERVER_PORT`, `MINIQMT_CL
 
 - **miniqmt-http-api** — HTTP/SSE endpoint reference for programmatic callers
 - **trading-analysis** — Money flow + signals built on top of `/data/ticks`
-- **auto-trading-loop** — Top-level playbook for external AI agents

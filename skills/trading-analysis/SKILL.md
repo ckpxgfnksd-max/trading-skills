@@ -195,4 +195,3 @@ Multiple stocks append a ranking:
 
 - **miniqmt-cli** — The daemon and data source underneath
 - **miniqmt-http-api** — HTTP/SSE endpoints used by this tool
-- **auto-trading-loop** — How to compose analysis + orders into a trading loop

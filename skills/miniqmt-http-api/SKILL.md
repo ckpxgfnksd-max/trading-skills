@@ -142,4 +142,3 @@ def stream_orders(account):
 
 - `miniqmt-cli` — CLI parameter reference and deployment
 - `trading-analysis` — Money flow + signals built on top of `/data/ticks`
-- `auto-trading-loop` — How to compose these endpoints into a full trading loop
