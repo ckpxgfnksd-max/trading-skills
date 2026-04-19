@@ -39,10 +39,12 @@ Agents must check `state == "ready"` before trading. Any other state (especially
 
 ### Trade (`/trade/*`)
 
+> **Terminology — "live account"**: Any account with `requires_confirm_live = true` in the daemon's `server.toml`. This is a **property** (real-money / protected account), not an account name. Live accounts require `confirm_live_last4` (last 4 digits of `account_id`) on `/trade/order`, `/trade/preview`, `/trade/cancel`, and `/risk/reset`.
+
 | Method | Path | Query / Body | Returns |
 |--------|------|--------------|---------|
 | GET | `/trade/accounts` | — | `[{name, account_id_masked, account_type, requires_confirm_live}]` |
-| GET | `/trade/account/meta` | `name` | Masked id + type + live flag |
+| GET | `/trade/account/meta` | `name` | Masked id + type + `requires_confirm_live` flag |
 | GET | `/trade/asset` | `account` | `{cash, frozen, total, market_value}` |
 | GET | `/trade/positions` | `account` | List of position dicts |
 | GET | `/trade/orders` | `account` | Today's orders |

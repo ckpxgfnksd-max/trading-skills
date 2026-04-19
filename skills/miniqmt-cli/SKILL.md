@@ -118,6 +118,8 @@ miniqmt-cli account trades --account sim
 
 ### Trading (Three-Layer Safety)
 
+> **Terminology — "live account" (实盘账户)**: Any account with `requires_confirm_live = true` in `server.toml`. This is a **property**, not an account name. Live accounts require `--confirm-live <last-4-digits-of-account_id>` on every order, cancel, risk-reset, and even `--dry-run` preview. Set to `false` for sim/paper accounts. In the examples below, `sim` is a paper account and `real` is a live account.
+
 Orders go through three independent safety checks:
 
 1. **CLI layer**: `--dry-run` preview, interactive "yes" confirmation, `--confirm-live` digit match
@@ -137,8 +139,8 @@ miniqmt-cli order buy --account sim --code 000001.SZ --volume 100 --price 10.50 
 # Sell
 miniqmt-cli order sell --account sim --code 000001.SZ --volume 100 --price 11.00 --yes
 
-# Live account requires last-4-digit verification
-miniqmt-cli order buy --account live --code 000001.SZ --volume 100 --price 10.50 --confirm-live 1234
+# Live (real-money) account requires last-4-digit verification
+miniqmt-cli order buy --account real --code 000001.SZ --volume 100 --price 10.50 --confirm-live 1234
 
 # Cancel an order
 miniqmt-cli order cancel --account sim --order-id 12345 --yes
@@ -163,8 +165,8 @@ miniqmt-cli --format json risk status --account sim
 # Reset the breaker (operator action — requires a justification note)
 miniqmt-cli risk reset --account sim --note "false positive: baseline re-captured"
 
-# Live account reset requires last-4-digit confirmation
-miniqmt-cli risk reset --account live --note "manual unfreeze" --confirm-live 1234
+# Live (real-money) account reset requires last-4-digit confirmation
+miniqmt-cli risk reset --account real --note "manual unfreeze" --confirm-live 1234
 ```
 
 `risk status` fields of interest:
@@ -302,10 +304,10 @@ qmt_path = "C:/国金QMT交易端/userdata_mini"
 account_id = "55001234"
 account_type = "STOCK"
 
-[accounts.live]
+[accounts.real]                       # real-money account; name is arbitrary
 account_id = "88881234"
 account_type = "STOCK"
-requires_confirm_live = true
+requires_confirm_live = true          # marks this as a "live account" — extra confirmation required
 
 [audit]
 log_path = "~/.miniqmt_cli/orders.jsonl"
