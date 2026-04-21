@@ -24,7 +24,13 @@ All responses are JSON unless the endpoint is SSE (noted below). All requests th
 | GET | `/version` | Daemon build version |
 | GET | `/health` | Returns `{"state": <state>}` plus state-specific extras. Possible `state` values: `"ready"`, `"risk_breaker_tripped"` (extras: `tripped_accounts: [...]`), `"daemon_up_xtquant_missing"` (extras: `error`), `"daemon_up_no_trader"`, `"daemon_up_baseline_pending"` (extras: `accounts_pending`). When `--dry-run`, includes `"dry_run": true`. |
 
-Agents must check `state == "ready"` before trading. Any other state (especially `"risk_breaker_tripped"`) means halt.
+How agents should interpret each state:
+
+- `"ready"` — proceed.
+- `"risk_breaker_tripped"` — **halt**. Opening orders are blocked at the daemon layer; only closing/cancel will succeed.
+- `"daemon_up_xtquant_missing"` — **halt**. Misconfiguration (`qmt_path`); no recovery from the agent side.
+- `"daemon_up_no_trader"` — **NOT an error, NOT a login failure.** It only means the daemon hasn't opened a trader session yet this process lifetime. Traders are created lazily on the first `/trade/*` call for an account. To advance to `"ready"`, call e.g. `GET /trade/asset?account=<name>` once — any real login failure will surface there with an explicit error, not in `/health`.
+- `"daemon_up_baseline_pending"` — trader is up but risk baseline isn't captured for some accounts; safe to query, may affect risk-gated trades.
 
 ### Market Data (`/data/*`)
 
