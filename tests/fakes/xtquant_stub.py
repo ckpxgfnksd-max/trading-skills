@@ -30,6 +30,8 @@ class FakeXtData:
             "600000.SH": {"lastPrice": 7.89, "volume": 5000},
         }
         self.market_data: dict = {}
+        self.download_calls: list = []
+        self.last_market_data_call: dict = {}
 
     def get_sector_list(self):
         return list(self.sectors)
@@ -44,7 +46,27 @@ class FakeXtData:
         return {c: dict(self.ticks.get(c, {})) for c in codes}
 
     def get_market_data_ex(self, field_list, stock_list, period, start_time, end_time):
+        self.last_market_data_call = {
+            "field_list": list(field_list or []),
+            "stock_list": list(stock_list or []),
+            "period": period,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
         return dict(self.market_data)
+
+    def download_history_data2(self, stock_list, period, start_time, end_time, callback=None):
+        # The real xtquant C++ binding rejects anything other than list[str].
+        if not isinstance(stock_list, list):
+            raise TypeError(
+                "download_history_data2: stock_list must be list, "
+                f"got {type(stock_list).__name__}"
+            )
+        self.download_calls.append({
+            "stock_list": list(stock_list), "period": period,
+            "start_time": start_time, "end_time": end_time,
+        })
+        return True
 
     def subscribe_quote(self, stock_code, period, callback):
         seq = self._next_seq

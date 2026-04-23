@@ -154,16 +154,23 @@ def test_health_no_breaker_when_reset(client, fake_xtquant):
     assert body["state"] != "risk_breaker_tripped"
 
 
-def test_health_reports_baseline_pending(client, fake_xtquant):
-    """After a trader logs in but before baseline captured, /health reports pending."""
-    # Force trader login via a positions query (doesn't capture baseline)
+def test_health_reports_baseline_pending(client, fake_xtquant, monkeypatch):
+    """When a trader is logged in but baseline capture has failed (e.g. transient
+    broker error), /health must surface daemon_up_baseline_pending so the
+    operator knows the account isn't fully armed for risk checks."""
+    # Make asset query raise so the post-login baseline capture fails but the
+    # trader login itself succeeds. Positions query still works because it
+    # hits query_stock_positions, not query_stock_asset.
+    from miniqmt_cli.server import xttrader_adapter
+    def _boom(trader, acc):
+        raise RuntimeError("transient broker error")
+    monkeypatch.setattr(xttrader_adapter, "query_stock_asset", _boom)
+
     r = client.get("/trade/positions", params={"account": "sim"})
     assert r.status_code == 200
-    # At this point no risk state exists for sim or live
     resp = client.get("/health")
     body = resp.json()
     assert body["state"] == "daemon_up_baseline_pending"
-    # Both accounts should be listed as pending
     assert "sim" in body["accounts_pending"]
     assert "live" in body["accounts_pending"]
 

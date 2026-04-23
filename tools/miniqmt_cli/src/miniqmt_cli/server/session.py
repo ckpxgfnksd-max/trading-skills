@@ -106,25 +106,38 @@ class SessionManager:
             raise RuntimeError("trader is unavailable in --dry-run daemon mode")
         await self.ensure_xtquant()
         handle = self._traders.get(account_name)
-        if handle is not None:
-            return handle
-        lock = self._lock_for(account_name)
-        async with lock:
-            handle = self._traders.get(account_name)
-            if handle is not None:
-                return handle
-            acc_cfg = self.get_account(account_name)
-            trader = xttrader_adapter.create_trader(
-                self.cfg.resolved_session_id(),
-                self.cfg.resolved_userdata_mini_path(),
-                dispatcher=self.dispatch_order_event,
-                account_name=account_name,
+        if handle is None:
+            lock = self._lock_for(account_name)
+            async with lock:
+                handle = self._traders.get(account_name)
+                if handle is None:
+                    acc_cfg = self.get_account(account_name)
+                    trader = xttrader_adapter.create_trader(
+                        self.cfg.resolved_session_id(),
+                        self.cfg.resolved_userdata_mini_path(),
+                        dispatcher=self.dispatch_order_event,
+                        account_name=account_name,
+                    )
+                    acc = xttrader_adapter.subscribe_account(trader, acc_cfg)
+                    handle = TraderHandle(trader=trader, acc=acc)
+                    self._traders[account_name] = handle
+                    log.info("trader logged in: %s", account_name)
+        # Always ensure today's risk baseline. ensure_baseline fast-paths to
+        # a dict lookup when already captured for today; on the slow path
+        # (first login / midnight rollover) it blocks on a broker asset
+        # query for tens to hundreds of ms, so dispatch to a worker thread
+        # to keep the event loop responsive. ensure_baseline already logs
+        # its own WARNING on capture failure — we just swallow here so a
+        # transient broker blip doesn't fail the trader handle itself.
+        try:
+            await asyncio.to_thread(self.risk.ensure_baseline, account_name)
+        except Exception:
+            log.debug(
+                "baseline capture for %s failed at get_trader; "
+                "will retry on next access or first order",
+                account_name,
             )
-            acc = xttrader_adapter.subscribe_account(trader, acc_cfg)
-            handle = TraderHandle(trader=trader, acc=acc)
-            self._traders[account_name] = handle
-            log.info("trader logged in: %s", account_name)
-            return handle
+        return handle
 
     def _xttrader_ctx_for_risk(self, account_name: str) -> tuple:
         """Synchronous adapter for RiskManager's xttrader_ctx callable.

@@ -1,11 +1,14 @@
 """Read-only market data endpoints."""
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from miniqmt_cli.server import xtdata_adapter
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/data", tags=["data"])
 
@@ -70,9 +73,15 @@ async def kline(
             detail="period=tick is not supported by kline; use /data/ticks",
         )
     await _session(request).ensure_xtquant()
-    data = xtdata_adapter.get_market_data_ex(
-        codes=[code], period=period, start_time=start, end_time=end
-    )
+    try:
+        data = xtdata_adapter.get_market_data_ex(
+            codes=[code], period=period, start_time=start, end_time=end
+        )
+    except Exception as e:
+        log.exception("kline xtquant call failed")
+        raise HTTPException(
+            status_code=500, detail=f"xtquant get_market_data_ex failed: {e}"
+        )
     return _kline_to_records(data, code)
 
 
@@ -84,9 +93,15 @@ async def ticks(
     end: str = Query(...),
 ):
     await _session(request).ensure_xtquant()
-    data = xtdata_adapter.get_market_data_ex(
-        codes=[code], period="tick", start_time=start, end_time=end
-    )
+    try:
+        data = xtdata_adapter.get_market_data_ex(
+            codes=[code], period="tick", start_time=start, end_time=end
+        )
+    except Exception as e:
+        log.exception("ticks xtquant call failed")
+        raise HTTPException(
+            status_code=500, detail=f"xtquant get_market_data_ex failed: {e}"
+        )
     return _kline_to_records(data, code)
 
 
