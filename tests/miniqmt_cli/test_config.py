@@ -41,7 +41,7 @@ def test_server_config_reads_accounts(tmp_path):
     assert cfg.port == 9000
     assert set(cfg.accounts) == {"sim", "live"}
     assert cfg.accounts["live"].requires_confirm_live is True
-    assert cfg.accounts["live"].last4 == "1234"
+    assert cfg.accounts["live"].last4 == "0002"
 
 
 def test_client_does_not_touch_server_file(tmp_path, monkeypatch):
@@ -63,7 +63,7 @@ def test_session_id_defaults_to_pid(tmp_path):
 def test_account_masked_id():
     from miniqmt_cli.server_config import AccountConfig
     acc = AccountConfig(name="live", account_id="1230002")
-    assert acc.masked_id().endswith("1234")
+    assert acc.masked_id().endswith("0002")
     assert "*" in acc.masked_id()
 
 

@@ -41,8 +41,11 @@ class SessionManager:
         self._idem_lock = asyncio.Lock()
         self._xtquant_loaded = False
         self._xtquant_load_lock = asyncio.Lock()
-        # Order event subscriber management
-        self._order_subscribers: list[asyncio.Queue] = []
+        # Order event subscriber management. Each entry is (queue, loop) so
+        # that dispatch_order_event — called from xtquant's callback thread —
+        # can schedule the put via loop.call_soon_threadsafe instead of the
+        # cross-thread-unsafe asyncio.Queue.put_nowait.
+        self._order_subscribers: list[tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = []
         self._sub_lock = asyncio.Lock()
         # Phase 2: risk manager is composed into session (single-direction dep).
         self.risk = RiskManager(cfg, self.audit, self._xttrader_ctx_for_risk)
@@ -73,33 +76,50 @@ class SessionManager:
         """Called from xtquant callback thread. Fan-out to SSE subscribers
         AND forward to RiskManager for pending/snapshot updates.
 
-        Thread-safe: asyncio.Queue.put_nowait is safe from any thread;
-        RiskManager uses its own threading.Lock.
+        asyncio.Queue is NOT thread-safe; we must schedule the put on each
+        subscriber's owning event loop via call_soon_threadsafe.
+        RiskManager.on_trade_event uses its own threading.Lock and is safe
+        to invoke directly from this thread.
         """
-        for q in self._order_subscribers:
+        # Snapshot the subscriber list so a concurrent subscribe/unsubscribe
+        # can't mutate it under us mid-iteration.
+        for q, loop in list(self._order_subscribers):
+            if loop.is_closed():
+                continue
             try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                log.warning("order subscriber queue full, dropping event")
+                loop.call_soon_threadsafe(self._enqueue_order_event, q, event)
+            except RuntimeError:
+                # Loop shut down between is_closed() check and the call.
+                continue
         try:
             self.risk.on_trade_event(event)
         except Exception:
             log.exception("risk.on_trade_event failed")
 
+    @staticmethod
+    def _enqueue_order_event(q: asyncio.Queue, event: dict) -> None:
+        """Runs on the subscriber's event loop; safe to use put_nowait here."""
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            log.warning("order subscriber queue full, dropping event")
+
     async def subscribe_orders(self) -> asyncio.Queue:
-        """Register a new order event subscriber. Returns its queue."""
+        """Register a new order event subscriber. Returns its queue, bound to
+        the calling coroutine's running event loop."""
+        loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue(maxsize=256)
         async with self._sub_lock:
-            self._order_subscribers.append(q)
+            self._order_subscribers.append((q, loop))
         return q
 
     async def unsubscribe_orders(self, q: asyncio.Queue) -> None:
         """Remove an order event subscriber."""
         async with self._sub_lock:
-            try:
-                self._order_subscribers.remove(q)
-            except ValueError:
-                pass
+            for i, (entry_q, _loop) in enumerate(self._order_subscribers):
+                if entry_q is q:
+                    self._order_subscribers.pop(i)
+                    return
 
     async def get_trader(self, account_name: str) -> TraderHandle:
         if self.dry_run:

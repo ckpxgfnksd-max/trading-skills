@@ -1,6 +1,7 @@
 """Shared fixtures for miniqmt-cli tests."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))  # make `tests.fakes` importable
+
+# Watchdog spins a real daemon thread that would persist across tests and
+# os._exit() the test process if a test ever sat at a breakpoint > 60s.
+# Disable it under pytest.
+os.environ.setdefault("MINIQMT_DISABLE_WATCHDOG", "1")
 
 from tests.fakes import xtquant_stub  # noqa: E402
 

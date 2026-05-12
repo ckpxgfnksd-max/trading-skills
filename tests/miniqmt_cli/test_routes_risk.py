@@ -62,7 +62,7 @@ def test_risk_reset_live_requires_confirm_last4(client, fake_xtquant):
     sess = client.app.state.session
     # Prime live trader and baseline
     client.post("/trade/order", json=_body_order(
-        account="live", confirm_live_last4="1234", client_req_id="req-prime-live",
+        account="live", confirm_live_last4="0002", client_req_id="req-prime-live",
     ))
     sess.risk.trip_breaker("live", reason="test")
     # Without confirm
@@ -78,7 +78,7 @@ def test_risk_reset_live_requires_confirm_last4(client, fake_xtquant):
     assert resp.status_code == 400
     # Correct confirm
     resp = client.post("/risk/reset", json={
-        "account": "live", "operator_note": "ok", "confirm_live_last4": "1234",
+        "account": "live", "operator_note": "ok", "confirm_live_last4": "0002",
     })
     assert resp.status_code == 200
     assert resp.json()["account"] == "live"
@@ -181,7 +181,7 @@ def test_health_ready_after_all_baselines_captured(client, fake_xtquant):
     from tests.miniqmt_cli.test_routes_trade import _body
     client.post("/trade/order", json=_body(account="sim", client_req_id="req-hb1"))
     client.post("/trade/order", json=_body(
-        account="live", confirm_live_last4="1234", client_req_id="req-hb2",
+        account="live", confirm_live_last4="0002", client_req_id="req-hb2",
     ))
     resp = client.get("/health")
     assert resp.json()["state"] == "ready"

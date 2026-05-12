@@ -126,6 +126,8 @@ class TestSessionSubscriber:
         q = await session.subscribe_orders()
         event = {"type": "order_status", "order_id": 1}
         session.dispatch_order_event(event)
+        # dispatch schedules via call_soon_threadsafe; let the loop drain.
+        await asyncio.sleep(0)
         result = q.get_nowait()
         assert result == event
 
@@ -135,6 +137,7 @@ class TestSessionSubscriber:
         q2 = await session.subscribe_orders()
         event = {"type": "trade", "order_id": 2}
         session.dispatch_order_event(event)
+        await asyncio.sleep(0)
         assert q1.get_nowait() == event
         assert q2.get_nowait() == event
 
@@ -143,6 +146,7 @@ class TestSessionSubscriber:
         q = await session.subscribe_orders()
         await session.unsubscribe_orders(q)
         session.dispatch_order_event({"type": "test"})
+        await asyncio.sleep(0)
         assert q.empty()
 
     @pytest.mark.asyncio
@@ -153,10 +157,33 @@ class TestSessionSubscriber:
             session.dispatch_order_event({"i": i})
         # 257th should not raise
         session.dispatch_order_event({"i": 256})
+        await asyncio.sleep(0)
         assert q.qsize() == 256
+
+    @pytest.mark.asyncio
+    async def test_dispatch_from_other_thread_is_safe(self, session):
+        """dispatch_order_event from a non-loop thread must not corrupt the
+        queue; the subscriber must still receive the event."""
+        import threading
+        q = await session.subscribe_orders()
+        event = {"type": "trade", "order_id": 99, "from": "other_thread"}
+
+        def fire():
+            session.dispatch_order_event(event)
+
+        t = threading.Thread(target=fire)
+        t.start()
+        t.join()
+        # Allow the loop's ready queue to drain the threadsafe callback.
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+            if q.qsize():
+                break
+        assert q.qsize() == 1
+        assert q.get_nowait() == event
 
     @pytest.mark.asyncio
     async def test_unsubscribe_nonexistent_queue(self, session):
         q = asyncio.Queue()
-        # Should not raise
+        # Should not raise even though q was never subscribed.
         await session.unsubscribe_orders(q)

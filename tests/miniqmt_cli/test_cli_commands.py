@@ -171,7 +171,7 @@ def test_order_buy_live_with_confirm(cli_env, fake_xtquant):
             "--volume", "100",
             "--price", "12.34",
             "--yes",
-            "--confirm-live", "1234",
+            "--confirm-live", "0002",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -333,7 +333,7 @@ def test_cli_risk_reset_live_without_confirm(cli_env, fake_xtquant, client):
         "account": "live", "code": "000001.SZ", "side": "buy",
         "volume": 100, "price": 12.0, "type": "limit",
         "client_req_id": "req-cli-live",
-        "confirm_live_last4": "1234",
+        "confirm_live_last4": "0002",
     })
     assert resp.status_code == 200, resp.text
     client.app.state.session.risk.trip_breaker("live", reason="cli-live")

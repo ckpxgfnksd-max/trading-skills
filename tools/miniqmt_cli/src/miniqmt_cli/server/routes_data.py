@@ -1,8 +1,9 @@
 """Read-only market data endpoints."""
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -11,6 +12,25 @@ from miniqmt_cli.server import xtdata_adapter
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/data", tags=["data"])
+
+# xtquant calls are blocking C-extension entries. Running them inline in an
+# async handler blocks the entire uvicorn event loop and has caused full
+# daemon freezes when xtquant's network path wedges. Always go through this
+# helper: it dispatches to a worker thread and enforces a hard timeout so
+# one stuck call surfaces as 503 instead of hanging every other request.
+XT_TIMEOUT_LIGHT = 10.0      # snapshot-style queries
+XT_TIMEOUT_HEAVY = 60.0      # history download / large pulls
+
+
+async def _xt_call(fn: Callable[..., Any], *args, timeout: float, label: str) -> Any:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        log.warning("xtquant call %s timed out after %.1fs", label, timeout)
+        raise HTTPException(
+            status_code=503,
+            detail=f"xtquant {label} timed out after {timeout}s",
+        ) from e
 
 
 def _session(request: Request):
@@ -25,7 +45,8 @@ def version(request: Request):
 @router.get("/sectors")
 async def sectors(request: Request):
     await _session(request).ensure_xtquant()
-    return {"sectors": xtdata_adapter.get_sector_list()}
+    data = await _xt_call(xtdata_adapter.get_sector_list, timeout=XT_TIMEOUT_LIGHT, label="get_sector_list")
+    return {"sectors": data}
 
 
 @router.get("/instruments")
@@ -35,10 +56,11 @@ async def instruments(
     limit: Optional[int] = Query(None),
 ):
     await _session(request).ensure_xtquant()
-    if sector:
-        codes = xtdata_adapter.get_stock_list_in_sector(sector)
-    else:
-        codes = xtdata_adapter.get_stock_list_in_sector("沪深A股")
+    target = sector if sector else "沪深A股"
+    codes = await _xt_call(
+        xtdata_adapter.get_stock_list_in_sector, target,
+        timeout=XT_TIMEOUT_LIGHT, label="get_stock_list_in_sector",
+    )
     if limit:
         codes = codes[:limit]
     return {"codes": codes}
@@ -47,7 +69,10 @@ async def instruments(
 @router.get("/instrument")
 async def instrument(request: Request, code: str = Query(...)):
     await _session(request).ensure_xtquant()
-    detail = xtdata_adapter.get_instrument_detail(code)
+    detail = await _xt_call(
+        xtdata_adapter.get_instrument_detail, code,
+        timeout=XT_TIMEOUT_LIGHT, label="get_instrument_detail",
+    )
     if not detail:
         raise HTTPException(status_code=404, detail=f"instrument not found: {code}")
     return detail
@@ -56,7 +81,10 @@ async def instrument(request: Request, code: str = Query(...)):
 @router.get("/tick")
 async def tick(request: Request, codes: List[str] = Query(..., alias="code")):
     await _session(request).ensure_xtquant()
-    return xtdata_adapter.get_full_tick(codes)
+    return await _xt_call(
+        xtdata_adapter.get_full_tick, codes,
+        timeout=XT_TIMEOUT_LIGHT, label="get_full_tick",
+    )
 
 
 @router.get("/kline")
@@ -74,9 +102,13 @@ async def kline(
         )
     await _session(request).ensure_xtquant()
     try:
-        data = xtdata_adapter.get_market_data_ex(
-            codes=[code], period=period, start_time=start, end_time=end
+        data = await _xt_call(
+            xtdata_adapter.get_market_data_ex,
+            [code], period, start, end,
+            timeout=XT_TIMEOUT_HEAVY, label="get_market_data_ex(kline)",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception("kline xtquant call failed")
         raise HTTPException(
@@ -94,9 +126,13 @@ async def ticks(
 ):
     await _session(request).ensure_xtquant()
     try:
-        data = xtdata_adapter.get_market_data_ex(
-            codes=[code], period="tick", start_time=start, end_time=end
+        data = await _xt_call(
+            xtdata_adapter.get_market_data_ex,
+            [code], "tick", start, end,
+            timeout=XT_TIMEOUT_HEAVY, label="get_market_data_ex(ticks)",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception("ticks xtquant call failed")
         raise HTTPException(

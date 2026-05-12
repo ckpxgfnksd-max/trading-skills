@@ -1,9 +1,10 @@
 """Trade and account endpoints including the order guard pipeline."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -14,6 +15,22 @@ from miniqmt_cli.server_config import AccountConfig
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trade", tags=["trade"])
+
+# xtquant trader calls block the C extension and have wedged the event loop
+# in production. Always dispatch through this helper with a hard timeout.
+XT_TIMEOUT_QUERY = 10.0
+XT_TIMEOUT_SUBMIT = 30.0
+
+
+async def _xt_call(fn: Callable[..., Any], *args, timeout: float, label: str) -> Any:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        log.warning("xttrader call %s timed out after %.1fs", label, timeout)
+        raise HTTPException(
+            status_code=503,
+            detail=f"xttrader {label} timed out after {timeout}s",
+        ) from e
 
 
 def _session(request: Request):
@@ -55,7 +72,10 @@ async def asset(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return xttrader_adapter.query_stock_asset(handle.trader, handle.acc)
+    return await _xt_call(
+        xttrader_adapter.query_stock_asset, handle.trader, handle.acc,
+        timeout=XT_TIMEOUT_QUERY, label="query_stock_asset",
+    )
 
 
 @router.get("/positions")
@@ -63,7 +83,10 @@ async def positions(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return xttrader_adapter.query_stock_positions(handle.trader, handle.acc)
+    return await _xt_call(
+        xttrader_adapter.query_stock_positions, handle.trader, handle.acc,
+        timeout=XT_TIMEOUT_QUERY, label="query_stock_positions",
+    )
 
 
 @router.get("/orders")
@@ -71,7 +94,10 @@ async def orders(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return xttrader_adapter.query_stock_orders(handle.trader, handle.acc)
+    return await _xt_call(
+        xttrader_adapter.query_stock_orders, handle.trader, handle.acc,
+        timeout=XT_TIMEOUT_QUERY, label="query_stock_orders",
+    )
 
 
 @router.get("/trades")
@@ -79,7 +105,10 @@ async def trades(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return xttrader_adapter.query_stock_trades(handle.trader, handle.acc)
+    return await _xt_call(
+        xttrader_adapter.query_stock_trades, handle.trader, handle.acc,
+        timeout=XT_TIMEOUT_QUERY, label="query_stock_trades",
+    )
 
 
 @router.get("/preview")
@@ -97,9 +126,15 @@ async def preview(
     last_price = None
     try:
         await sess.ensure_xtquant()
-        ticks = xtdata_adapter.get_full_tick([code])
+        ticks = await _xt_call(
+            xtdata_adapter.get_full_tick, [code],
+            timeout=XT_TIMEOUT_QUERY, label="get_full_tick(preview)",
+        )
         entry = ticks.get(code, {})
         last_price = entry.get("lastPrice") or entry.get("last_price")
+    except HTTPException:
+        # timeout already logged; preview is best-effort, swallow
+        log.warning("preview: last price unavailable for %s (timeout)", code)
     except Exception as e:
         log.warning("preview: could not fetch last price for %s: %s", code, e)
     est_cost = float(volume) * float(price)
@@ -185,10 +220,13 @@ async def place_order(request: Request, body: OrderRequest):
         )
         raise HTTPException(status_code=500, detail=f"trader login failed: {e}")
 
-    # Risk check (Phase 2)
-    decision = sess.risk.check_order(
-        body.account, body.side, body.code, body.volume, body.price,
-        order_type=body.type,
+    # Risk check (Phase 2). check_order may issue blocking xttrader/xtdata
+    # calls for snapshot refresh and last-price lookup, so dispatch to a
+    # worker thread to keep the event loop responsive.
+    decision = await _xt_call(
+        sess.risk.check_order,
+        body.account, body.side, body.code, body.volume, body.price, body.type,
+        timeout=XT_TIMEOUT_QUERY, label="risk.check_order",
     )
     sess.audit.append(
         phase="risk_check",
@@ -215,15 +253,23 @@ async def place_order(request: Request, body: OrderRequest):
 
     # Submit
     try:
-        result = xttrader_adapter.order_stock(
-            handle.trader,
-            handle.acc,
-            body.code,
-            body.side,
-            body.volume,
-            body.price,
-            order_type=body.type,
+        result = await _xt_call(
+            xttrader_adapter.order_stock,
+            handle.trader, handle.acc, body.code, body.side,
+            body.volume, body.price, body.type,
+            timeout=XT_TIMEOUT_SUBMIT, label="order_stock",
         )
+    except HTTPException:
+        # Timeout: audit and re-raise as 503 so caller knows the submit is
+        # in limbo (xtquant may still have accepted it). Status-watching
+        # subscribers should reconcile via /trade/orders.
+        sess.audit.append(
+            phase="post",
+            client_req_id=body.client_req_id,
+            status="error",
+            error="order_stock timed out",
+        )
+        raise
     except Exception as e:
         sess.audit.append(
             phase="post",
@@ -275,9 +321,20 @@ async def cancel_order(request: Request, body: CancelRequest):
     )
     try:
         handle = await sess.get_trader(body.account)
-        result = xttrader_adapter.cancel_order_stock(
-            handle.trader, handle.acc, body.order_id
+        result = await _xt_call(
+            xttrader_adapter.cancel_order_stock,
+            handle.trader, handle.acc, body.order_id,
+            timeout=XT_TIMEOUT_SUBMIT, label="cancel_order_stock",
         )
+    except HTTPException:
+        sess.audit.append(
+            phase="post",
+            client_req_id=body.client_req_id,
+            action="cancel",
+            status="error",
+            error="cancel_order_stock timed out",
+        )
+        raise
     except Exception as e:
         sess.audit.append(
             phase="post",
