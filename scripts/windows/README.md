@@ -74,8 +74,11 @@ What it does, in order:
    - `pip install -e tools\miniqmt_cli --quiet` (picks up new deps)
    - import smoke test
    - `Stop-ScheduledTask` + `Start-ScheduledTask MiniqmtDaemon`
-   - polls `http://127.0.0.1:8765/health` until `ready` /
-     `daemon_up_no_trader` (or explicit xtquant-missing error)
+   - polls `http://127.0.0.1:8765/health` until `daemon.state == "up"`
+     (a fresh daemon with `trader.state == "never_connected"` for every
+     account is the normal lazy-load state and counts as success); a
+     `daemon.state == "degraded"` response prints a warning but still
+     completes the deploy
    - prints remote `/version`
 
 Any step that fails aborts the deploy with a clear error message.
@@ -115,7 +118,7 @@ WIN_SERVICE=MiniqmtDaemonStaging ./scripts/deploy.sh
 |--------------------------------------------------|---------------------------------------------------------------------|
 | `tar -xzf` fails with "command not found"        | Windows older than Win10 1803. Upgrade, or install GNU tar manually |
 | `Scheduled Task MiniqmtDaemon not registered`     | Re-run `bootstrap.ps1` on Windows                                   |
-| `health: daemon_up_xtquant_missing`              | `server.toml` `qmt_path` is wrong or miniQMT not installed there   |
+| `health: daemon=degraded xtquant_loaded=False`   | `server.toml` `qmt_path` is wrong or miniQMT not installed there   |
 | `pip install` ImportError for `fastapi`          | Python interpreter in `$WIN_PYTHON` is not the one with our deps   |
 | `scp` succeeds but files not updated             | `$WIN_REPO` disagreement; check with `ssh $WIN_HOST dir $WIN_REPO` |
 | Task restarts but `/health` never becomes ready  | Check `daemon.log` under `$WIN_REPO`; likely xttrader login issue  |

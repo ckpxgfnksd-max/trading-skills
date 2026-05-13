@@ -105,14 +105,18 @@ if (-not $SkipHealth) {
     for ($i = 1; $i -le 10; $i++) {
         try {
             $resp = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 2
-            $state = $resp.state
-            Log "  health: $state"
-            if ($state -in @("ready", "daemon_up_no_trader")) {
+            $daemonState = $resp.daemon.state
+            $xtLoaded = $resp.daemon.xtquant_loaded
+            Log "  health: daemon=$daemonState xtquant_loaded=$xtLoaded"
+            if ($daemonState -eq "up") {
+                # A freshly restarted daemon legitimately has every account
+                # at trader.state == "never_connected" — that's the normal
+                # lazy-load state, not a deploy failure.
                 $ok = $true
                 break
             }
-            if ($state -eq "daemon_up_xtquant_missing") {
-                Write-Warning "xtquant failed to load — check server.toml qmt_path"
+            if ($daemonState -eq "degraded") {
+                Write-Warning "daemon degraded: xtquant failed to load — check server.toml qmt_path"
                 $ok = $true
                 break
             }
