@@ -7,7 +7,27 @@ from typing import Any, Dict, Iterator, Optional
 import click
 import httpx
 
+from miniqmt_cli.client.errors import SubmitIndeterminate
 from miniqmt_cli.client_config import ClientConfig
+
+# Daemon returns 504 with a structured detail dict for state-changing
+# operations that timed out. These error codes are the contract -- the
+# transport translates them into a typed exception so the CLI exits with
+# a distinct code instead of a generic "daemon error 504".
+_INDETERMINATE_ERRORS = {"submit_indeterminate", "cancel_indeterminate"}
+
+
+def _render_detail(detail: Any) -> str:
+    """Pretty-print a daemon error detail. Dicts get the human-readable
+    `message` extracted to the front; the rest stays as compact info."""
+    if isinstance(detail, dict):
+        msg = detail.get("message")
+        if msg:
+            rest = {k: v for k, v in detail.items() if k != "message"}
+            if rest:
+                return f"{msg} ({rest})"
+            return str(msg)
+    return str(detail)
 
 
 class Transport:
@@ -27,11 +47,20 @@ class Transport:
                 detail = body
         except Exception:
             detail = resp.text
+        # 504 with a structured indeterminate-state response: surface as a
+        # typed exit code so retrying scripts can tell "unknown state" from
+        # "we know it failed" -- the difference matters on a real account.
+        if (
+            resp.status_code == 504
+            and isinstance(detail, dict)
+            and detail.get("error") in _INDETERMINATE_ERRORS
+        ):
+            raise SubmitIndeterminate(detail["error"], detail)
         if resp.status_code >= 500:
             raise click.ClickException(
-                f"daemon error {resp.status_code}: {detail}"
+                f"daemon error {resp.status_code}: {_render_detail(detail)}"
             )
-        raise click.ClickException(f"{detail}")
+        raise click.ClickException(_render_detail(detail))
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         url = self.base_url + path

@@ -1,7 +1,6 @@
 """Trade and account endpoints including the order guard pipeline."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any, Callable, Dict, Optional
@@ -10,27 +9,31 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from miniqmt_cli.server import xttrader_adapter
+from miniqmt_cli.server._xt_call import (
+    XtCallSaturated, XtCallTimeout, xt_call,
+)
 from miniqmt_cli.server_config import AccountConfig
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
-# xtquant trader calls block the C extension and have wedged the event loop
-# in production. Always dispatch through this helper with a hard timeout.
+# Timeout budget enforced by the shared xt_call helper on a bounded pool.
 XT_TIMEOUT_QUERY = 10.0
 XT_TIMEOUT_SUBMIT = 30.0
 
 
-async def _xt_call(fn: Callable[..., Any], *args, timeout: float, label: str) -> Any:
+async def _xt_query(fn: Callable[..., Any], *args, timeout: float, label: str) -> Any:
+    """Read-side wrapper: timeouts surface as 503 (safe to retry)."""
     try:
-        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
-    except asyncio.TimeoutError as e:
-        log.warning("xttrader call %s timed out after %.1fs", label, timeout)
+        return await xt_call(fn, *args, timeout=timeout, label=label)
+    except XtCallTimeout as e:
         raise HTTPException(
             status_code=503,
-            detail=f"xttrader {label} timed out after {timeout}s",
+            detail=f"xttrader {e.label} timed out after {e.timeout_seconds}s",
         ) from e
+    except XtCallSaturated as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 def _session(request: Request):
@@ -72,7 +75,7 @@ async def asset(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return await _xt_call(
+    return await _xt_query(
         xttrader_adapter.query_stock_asset, handle.trader, handle.acc,
         timeout=XT_TIMEOUT_QUERY, label="query_stock_asset",
     )
@@ -83,7 +86,7 @@ async def positions(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return await _xt_call(
+    return await _xt_query(
         xttrader_adapter.query_stock_positions, handle.trader, handle.acc,
         timeout=XT_TIMEOUT_QUERY, label="query_stock_positions",
     )
@@ -94,7 +97,7 @@ async def orders(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return await _xt_call(
+    return await _xt_query(
         xttrader_adapter.query_stock_orders, handle.trader, handle.acc,
         timeout=XT_TIMEOUT_QUERY, label="query_stock_orders",
     )
@@ -105,7 +108,7 @@ async def trades(request: Request, account: str = Query(...)):
     sess = _session(request)
     _require_account(sess, account)
     handle = await sess.get_trader(account)
-    return await _xt_call(
+    return await _xt_query(
         xttrader_adapter.query_stock_trades, handle.trader, handle.acc,
         timeout=XT_TIMEOUT_QUERY, label="query_stock_trades",
     )
@@ -126,7 +129,7 @@ async def preview(
     last_price = None
     try:
         await sess.ensure_xtquant()
-        ticks = await _xt_call(
+        ticks = await _xt_query(
             xtdata_adapter.get_full_tick, [code],
             timeout=XT_TIMEOUT_QUERY, label="get_full_tick(preview)",
         )
@@ -223,7 +226,7 @@ async def place_order(request: Request, body: OrderRequest):
     # Risk check (Phase 2). check_order may issue blocking xttrader/xtdata
     # calls for snapshot refresh and last-price lookup, so dispatch to a
     # worker thread to keep the event loop responsive.
-    decision = await _xt_call(
+    decision = await _xt_query(
         sess.risk.check_order,
         body.account, body.side, body.code, body.volume, body.price, body.type,
         timeout=XT_TIMEOUT_QUERY, label="risk.check_order",
@@ -251,25 +254,48 @@ async def place_order(request: Request, body: OrderRequest):
             },
         )
 
-    # Submit
+    # Submit. State-changing call -- timeout is INDETERMINATE (the broker may
+    # have accepted the order even though we didn't see the seq), so we
+    # bypass _xt_query's 503 translation and surface 504 with an explicit
+    # reconcile directive. Callers that retry blindly on 503 would risk
+    # doubling the position; 504 + submit_indeterminate makes that wrong
+    # behavior loud at the protocol layer.
     try:
-        result = await _xt_call(
+        result = await xt_call(
             xttrader_adapter.order_stock,
             handle.trader, handle.acc, body.code, body.side,
             body.volume, body.price, body.type,
             timeout=XT_TIMEOUT_SUBMIT, label="order_stock",
         )
-    except HTTPException:
-        # Timeout: audit and re-raise as 503 so caller knows the submit is
-        # in limbo (xtquant may still have accepted it). Status-watching
-        # subscribers should reconcile via /trade/orders.
+    except XtCallTimeout as e:
         sess.audit.append(
             phase="post",
             client_req_id=body.client_req_id,
-            status="error",
-            error="order_stock timed out",
+            status="indeterminate",
+            error=f"order_stock timed out after {e.timeout_seconds}s -- broker state unknown",
         )
-        raise
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "submit_indeterminate",
+                "message": (
+                    f"order_stock did not respond within {e.timeout_seconds}s; "
+                    "broker MAY have accepted the order. DO NOT RETRY -- "
+                    "reconcile against /trade/orders before deciding."
+                ),
+                "client_req_id": body.client_req_id,
+                "reconcile_via": "/trade/orders",
+            },
+        ) from e
+    except XtCallSaturated as e:
+        # Pool saturated -- the order never reached xttrader, safe 503.
+        sess.audit.append(
+            phase="post",
+            client_req_id=body.client_req_id,
+            status="rejected",
+            error=str(e),
+        )
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         sess.audit.append(
             phase="post",
@@ -321,20 +347,45 @@ async def cancel_order(request: Request, body: CancelRequest):
     )
     try:
         handle = await sess.get_trader(body.account)
-        result = await _xt_call(
+        result = await xt_call(
             xttrader_adapter.cancel_order_stock,
             handle.trader, handle.acc, body.order_id,
             timeout=XT_TIMEOUT_SUBMIT, label="cancel_order_stock",
         )
-    except HTTPException:
+    except XtCallTimeout as e:
+        # Cancel is also state-changing -- a timeout means the broker may
+        # have accepted the cancel, may not have. Same 504 + reconcile
+        # contract as place_order.
         sess.audit.append(
             phase="post",
             client_req_id=body.client_req_id,
             action="cancel",
-            status="error",
-            error="cancel_order_stock timed out",
+            status="indeterminate",
+            error=f"cancel_order_stock timed out after {e.timeout_seconds}s -- broker state unknown",
         )
-        raise
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "cancel_indeterminate",
+                "message": (
+                    f"cancel_order_stock did not respond within {e.timeout_seconds}s; "
+                    "broker MAY have accepted the cancel. DO NOT RETRY -- "
+                    "reconcile against /trade/orders before deciding."
+                ),
+                "client_req_id": body.client_req_id,
+                "order_id": body.order_id,
+                "reconcile_via": "/trade/orders",
+            },
+        ) from e
+    except XtCallSaturated as e:
+        sess.audit.append(
+            phase="post",
+            client_req_id=body.client_req_id,
+            action="cancel",
+            status="rejected",
+            error=str(e),
+        )
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         sess.audit.append(
             phase="post",

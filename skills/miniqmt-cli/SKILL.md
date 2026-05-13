@@ -463,6 +463,10 @@ Env overrides: `MINIQMT_CLI_SERVER_HOST`, `MINIQMT_CLI_SERVER_PORT`, `MINIQMT_CL
 | 1 | Generic error |
 | 2 | Broker rejected the order (`BrokerReject`) |
 | 3 | Safety guard refused to proceed (`GuardExit`) |
+| 4 | Daemon-side risk layer refused the action (`RiskReject`) |
+| 5 | **Submit indeterminate** — order/cancel timed out; broker state unknown. **DO NOT RETRY.** Reconcile via `miniqmt-cli account orders --account <name>` before any next action |
+
+Exit code 5 is the contract for state-changing operations (place/cancel) that didn't get a definitive response within the submit timeout. Scripts that branch on exit code should treat it as fundamentally different from exit 1: code 1 means "we know it failed", code 5 means "we don't know whether the broker accepted it". A naive retry on code 5 risks doubling the position.
 
 ## Related Skills
 

@@ -171,6 +171,90 @@ def test_cancel_flow(client, fake_xtquant):
     assert fake_xtquant.traders[0].cancels == [order_id]
 
 
+def test_order_submit_timeout_returns_504_submit_indeterminate(
+    client, server_cfg, fake_xtquant, monkeypatch,
+):
+    """When order_stock exceeds the submit timeout, return 504 (not 503)
+    with structured submit_indeterminate detail and audit status
+    'indeterminate' (not 'error'). Retrying blindly on this response would
+    risk a double position; the contract has to be loud."""
+    import time
+
+    from miniqmt_cli.server import routes_trade, xttrader_adapter
+
+    # Tighten the submit timeout so the test is fast.
+    monkeypatch.setattr(routes_trade, "XT_TIMEOUT_SUBMIT", 0.2)
+
+    # Make order_stock block long enough to time out.
+    def slow_order(*args, **kwargs):
+        time.sleep(0.6)
+        return {"seq": 999}
+    monkeypatch.setattr(xttrader_adapter, "order_stock", slow_order)
+
+    resp = client.post("/trade/order", json=_body(client_req_id="req-to1"))
+    assert resp.status_code == 504, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "submit_indeterminate"
+    assert detail["client_req_id"] == "req-to1"
+    assert detail["reconcile_via"] == "/trade/orders"
+    assert "DO NOT RETRY" in detail["message"]
+    # Audit must NOT say "error" -- it says indeterminate so reconcilers
+    # can distinguish a known failure from an unknown state.
+    rows = [
+        json.loads(l)
+        for l in server_cfg.resolved_audit_log_path().read_text().splitlines()
+    ]
+    post_rows = [
+        r for r in rows
+        if r.get("phase") == "post" and r.get("client_req_id") == "req-to1"
+    ]
+    assert len(post_rows) == 1
+    assert post_rows[0]["status"] == "indeterminate"
+    assert "broker state unknown" in post_rows[0]["error"]
+
+
+def test_cancel_submit_timeout_returns_504_cancel_indeterminate(
+    client, server_cfg, fake_xtquant, monkeypatch,
+):
+    """Cancel-side mirror of the above. Cancel is also state-changing on
+    the broker, so timeout is INDETERMINATE not just an error."""
+    import time
+
+    from miniqmt_cli.server import routes_trade, xttrader_adapter
+
+    # Place an order first to have something to cancel.
+    r1 = client.post("/trade/order", json=_body(client_req_id="place-cancel-to"))
+    assert r1.status_code == 200
+    order_id = r1.json()["order_id"]
+
+    monkeypatch.setattr(routes_trade, "XT_TIMEOUT_SUBMIT", 0.2)
+
+    def slow_cancel(*args, **kwargs):
+        time.sleep(0.6)
+        return {"seq": 0}
+    monkeypatch.setattr(xttrader_adapter, "cancel_order_stock", slow_cancel)
+
+    resp = client.post(
+        "/trade/cancel",
+        json={"account": "sim", "order_id": order_id, "client_req_id": "cancel-to1"},
+    )
+    assert resp.status_code == 504, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "cancel_indeterminate"
+    assert detail["order_id"] == order_id
+    assert detail["reconcile_via"] == "/trade/orders"
+    rows = [
+        json.loads(l)
+        for l in server_cfg.resolved_audit_log_path().read_text().splitlines()
+    ]
+    post_rows = [
+        r for r in rows
+        if r.get("phase") == "post" and r.get("client_req_id") == "cancel-to1"
+    ]
+    assert len(post_rows) == 1
+    assert post_rows[0]["status"] == "indeterminate"
+
+
 def test_order_rejected_by_risk_check(client, server_cfg, fake_xtquant):
     """Risk check rejection should return 400 and audit a risk_check row."""
     # Shrink max_orders_per_minute so the 2nd order hits FREQUENCY

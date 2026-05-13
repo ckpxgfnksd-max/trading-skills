@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from miniqmt_cli.server._xt_call import shutdown_pool as _xt_shutdown
 from miniqmt_cli.server.routes_data import router as data_router
 from miniqmt_cli.server.routes_risk import router as risk_router
 from miniqmt_cli.server.routes_stream import router as stream_router
@@ -44,6 +45,7 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
         finally:
             if watchdog is not None:
                 watchdog.stop()
+            _xt_shutdown()
 
     app = FastAPI(title="miniqmt-cli daemon", version="0.2.0", lifespan=lifespan)
     app.state.session = SessionManager(cfg, dry_run=dry_run)

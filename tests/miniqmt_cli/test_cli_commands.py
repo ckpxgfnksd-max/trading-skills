@@ -142,6 +142,38 @@ def test_order_buy_with_yes(cli_env, server_cfg, fake_xtquant):
     assert len(fake_xtquant.traders[0].orders_placed) == 1
 
 
+def test_order_buy_submit_timeout_exits_5(cli_env, server_cfg, fake_xtquant, monkeypatch):
+    """CLI exits with code 5 (SubmitIndeterminate) when the daemon returns
+    a 504 submit_indeterminate. Distinct from exit 1 (generic) so scripts
+    can branch on 'unknown broker state' specifically."""
+    import time
+    from miniqmt_cli.server import routes_trade, xttrader_adapter
+
+    monkeypatch.setattr(routes_trade, "XT_TIMEOUT_SUBMIT", 0.2)
+
+    def slow_order(*args, **kwargs):
+        time.sleep(0.6)
+        return {"seq": 999}
+    monkeypatch.setattr(xttrader_adapter, "order_stock", slow_order)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "order", "buy",
+            "--account", "sim",
+            "--code", "000001.SZ",
+            "--volume", "100",
+            "--price", "12.34",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 5, result.output
+    assert "INDETERMINATE" in result.output
+    assert "DO NOT RETRY" in result.output
+    assert "/trade/orders" in result.output
+
+
 def test_order_buy_live_without_confirm_exits_3(cli_env, fake_xtquant):
     runner = CliRunner()
     result = runner.invoke(
