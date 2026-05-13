@@ -379,7 +379,7 @@ Quick map (full list in `skills/miniqmt-http-api/SKILL.md`):
 | CLI | HTTP |
 |-----|------|
 | `tick` / `kline` / `ticks` | `GET /data/tick` / `/data/kline` / `/data/ticks` |
-| `account asset/position/orders/trades` | `GET /trade/asset` / `/positions` / `/orders` / `/trades` |
+| `account asset/position/orders/trades` | `GET /trade/asset` / `/trade/positions` / `/trade/orders` / `/trade/trades` |
 | `order buy/sell --dry-run` | `GET /trade/preview` |
 | `order buy/sell` | `POST /trade/order` |
 | `order cancel` | `POST /trade/cancel` |
