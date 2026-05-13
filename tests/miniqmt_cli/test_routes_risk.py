@@ -137,30 +137,25 @@ def test_health_reflects_breaker_tripped(client, fake_xtquant):
     sess = client.app.state.session
     client.post("/trade/order", json=_body_order(client_req_id="req-h"))
     sess.risk.trip_breaker("sim", reason="testing")
-    resp = client.get("/health")
-    body = resp.json()
-    assert body["state"] == "risk_breaker_tripped"
-    assert "sim" in body["tripped_accounts"]
+    body = client.get("/health").json()
+    assert body["accounts"]["sim"]["risk_breaker"] == "tripped"
+    assert body["accounts"]["live"]["risk_breaker"] == "ok"
 
 
 def test_health_no_breaker_when_reset(client, fake_xtquant):
-    """Once breaker is reset, /health should revert to normal state."""
+    """Once breaker is reset, the account's risk_breaker subfield is ok."""
     sess = client.app.state.session
     client.post("/trade/order", json=_body_order(client_req_id="req-h2"))
     sess.risk.trip_breaker("sim", reason="testing")
     sess.risk.reset_breaker("sim", operator_note="manual")
-    resp = client.get("/health")
-    body = resp.json()
-    assert body["state"] != "risk_breaker_tripped"
+    body = client.get("/health").json()
+    assert body["accounts"]["sim"]["risk_breaker"] == "ok"
 
 
 def test_health_reports_baseline_pending(client, fake_xtquant, monkeypatch):
     """When a trader is logged in but baseline capture has failed (e.g. transient
-    broker error), /health must surface daemon_up_baseline_pending so the
-    operator knows the account isn't fully armed for risk checks."""
-    # Make asset query raise so the post-login baseline capture fails but the
-    # trader login itself succeeds. Positions query still works because it
-    # hits query_stock_positions, not query_stock_asset.
+    broker error), the affected accounts' baseline subfield must show
+    `pending` so the operator knows the account isn't fully armed."""
     from miniqmt_cli.server import xttrader_adapter
     def _boom(trader, acc):
         raise RuntimeError("transient broker error")
@@ -168,20 +163,23 @@ def test_health_reports_baseline_pending(client, fake_xtquant, monkeypatch):
 
     r = client.get("/trade/positions", params={"account": "sim"})
     assert r.status_code == 200
-    resp = client.get("/health")
-    body = resp.json()
-    assert body["state"] == "daemon_up_baseline_pending"
-    assert "sim" in body["accounts_pending"]
-    assert "live" in body["accounts_pending"]
+    body = client.get("/health").json()
+    assert body["accounts"]["sim"]["baseline"] == "pending"
+    assert body["accounts"]["live"]["baseline"] == "pending"
 
 
 def test_health_ready_after_all_baselines_captured(client, fake_xtquant):
-    """Once all accounts have captured baseline, /health is ready."""
-    # Place an order on each account to trigger baseline capture
+    """Once all accounts have captured baseline and trader is alive, every
+    account subblock shows healthy values."""
     from tests.miniqmt_cli.test_routes_trade import _body
     client.post("/trade/order", json=_body(account="sim", client_req_id="req-hb1"))
     client.post("/trade/order", json=_body(
         account="live", confirm_live_last4="0002", client_req_id="req-hb2",
     ))
-    resp = client.get("/health")
-    assert resp.json()["state"] == "ready"
+    body = client.get("/health").json()
+    assert body["daemon"]["state"] == "up"
+    for name in ("sim", "live"):
+        sub = body["accounts"][name]
+        assert sub["trader"]["state"] == "alive"
+        assert sub["risk_breaker"] == "ok"
+        assert sub["baseline"] == "captured"

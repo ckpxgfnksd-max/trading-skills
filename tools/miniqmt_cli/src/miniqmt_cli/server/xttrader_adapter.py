@@ -24,17 +24,33 @@ class TraderCallback:
     """Bridge xtquant's callback thread to the daemon's event dispatcher.
 
     Each method extracts relevant fields from xtquant objects and forwards
-    a normalized dict to the dispatcher callable.
+    a normalized dict to the dispatcher callable. Both `dispatcher` and
+    `on_disconnect` are optional and independent; if `dispatcher` is None,
+    order/trade/async-response events are dropped (explicit "I only care
+    about disconnect" mode) rather than silently no-op'd via a sentinel.
     """
 
-    def __init__(self, dispatcher: Callable[[dict], None], account_name: str):
+    def __init__(
+        self,
+        dispatcher: Optional[Callable[[dict], None]],
+        account_name: str,
+        on_disconnect: Optional[Callable[[str], None]] = None,
+    ):
         self._dispatch = dispatcher
         self._account = account_name
+        self._on_disconnect = on_disconnect
 
     def on_disconnected(self):
         log.warning("xttrader disconnected for account %s", self._account)
+        if self._on_disconnect is not None:
+            try:
+                self._on_disconnect(self._account)
+            except Exception:
+                log.exception("on_disconnect handler failed for %s", self._account)
 
     def on_order_stock_async_response(self, response):
+        if self._dispatch is None:
+            return
         try:
             self._dispatch({
                 "type": "order_response",
@@ -46,6 +62,8 @@ class TraderCallback:
             log.exception("on_order_stock_async_response dispatch failed")
 
     def on_order_event(self, order):
+        if self._dispatch is None:
+            return
         try:
             self._dispatch({
                 "type": "order_status",
@@ -63,6 +81,8 @@ class TraderCallback:
             log.exception("on_order_event dispatch failed")
 
     def on_trade_event(self, trade):
+        if self._dispatch is None:
+            return
         try:
             self._dispatch({
                 "type": "trade",
@@ -113,11 +133,14 @@ def create_trader(
     qmt_userdata_path: str,
     dispatcher: Optional[Callable[[dict], None]] = None,
     account_name: str = "",
+    on_disconnect: Optional[Callable[[str], None]] = None,
 ):
     xttrader = _xttrader_module()
     trader = xttrader.XtQuantTrader(qmt_userdata_path, session_id)
-    if dispatcher:
-        callback = TraderCallback(dispatcher, account_name)
+    if dispatcher is not None or on_disconnect is not None:
+        callback = TraderCallback(
+            dispatcher, account_name, on_disconnect=on_disconnect,
+        )
         trader.register_callback(callback)
     trader.start()
     connect_rc = trader.connect()

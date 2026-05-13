@@ -43,18 +43,65 @@ Before running any command, verify:
 2. **Daemon is running** on Windows -- check with `miniqmt-cli health`
 3. **miniQMT client is open** on Windows -- required for xtquant to connect to the broker
 
-Health states and what they mean:
+### `/health` response shape
 
-| State | Meaning | Action |
-|-------|---------|--------|
-| `ready` | Daemon + xtquant loaded + trader logged in + today's risk baseline captured for every configured account | Good to go |
-| `daemon_up_no_trader` | Daemon has not yet opened an `XtQuantTrader` session for any account this process lifetime. **Does NOT mean miniQMT is logged out** — traders are created lazily on the first account/order request. | Normal on fresh daemon; run any `account` command to trigger the session and re-check |
-| `daemon_up_baseline_pending` | Trader is logged in for at least one account, but today's risk baseline could not be captured for one or more configured accounts. Returns `{"accounts_pending": [...]}`. Orders on a pending account will be rejected with `BASELINE_PENDING` (fail-closed). | Normally self-heals: baseline is captured on trader login, so hitting any `account asset/position/orders` against the pending account re-tries. If it persists, check daemon logs for `baseline capture after login failed` — usually a transient broker blip; re-run the `account asset` probe. |
-| `daemon_up_xtquant_missing` | xtquant module could not be loaded | Check `qmt_path` in server.toml |
-| `risk_breaker_tripped` | At least one account's risk breaker is tripped (e.g. daily loss limit exceeded). Opening orders are blocked; cancels / closing sells still work. Returns `{"tripped_accounts": [...]}`. | Review `miniqmt-cli risk status --account <name>`; reset with `miniqmt-cli risk reset --account <name> --note "<reason>"` after confirming the cause |
-| Connection refused | Daemon not running or tunnel down | Check tunnel, then restart daemon |
+Two independent top-level blocks. There is **no** flat `state` enum — callers
+compose decisions from the structured fields. (The old composite strings like
+`daemon_up_no_trader` mixed two unrelated concerns into one name and have
+been removed.)
 
-**Important — do not confuse `daemon_up_no_trader` with "miniQMT not logged in".** The daemon only tracks its own in-memory trader session pool (`len(self._traders)`). It never queries miniQMT's GUI login state. To probe the actual login/broker connection, run an account command (e.g. `miniqmt-cli account asset --account <name>`) — a real login failure surfaces there as `trader.connect failed rc=...` or `trader.subscribe failed rc=...`, not in `health`.
+```json
+{
+  "daemon": {
+    "state": "up",              // up | degraded
+    "xtquant_loaded": true,
+    "xtquant_error": "..."      // present only when state == degraded
+  },
+  "accounts": {
+    "main": {
+      "trader": {
+        "state": "alive",       // never_connected | alive | lost
+        "last_connect_at": "2026-05-13T09:30:01Z",
+        "last_disconnect_at": null
+      },
+      "risk_breaker": "ok",     // ok | tripped
+      "baseline": "captured"    // captured | pending
+    }
+  }
+}
+```
+
+**Scope of each field:**
+
+- `daemon.state` is purely process-local: this Python process is up + xtquant
+  module loaded. It says nothing about miniQMT or the broker.
+- `accounts.<name>.trader.state` reflects what the daemon **last heard** on
+  the xtquant SDK channel — `alive` after a successful login, `lost` after
+  xtquant fires `on_disconnected`. The daemon cannot independently probe
+  miniQMT's GUI or broker connectivity, so a `lost` flag is a positive
+  signal (SDK told us the channel dropped), but a stale `alive` flag is
+  not a guarantee the channel is currently up. The only definitive
+  liveness probe is to run an account command — a real broker failure
+  surfaces as `trader.connect failed rc=...` or
+  `trader.subscribe failed rc=...`.
+- `risk_breaker` and `baseline` are computed from the daemon's risk manager.
+- When the daemon was started with `serve --dry-run`, the `daemon` block adds `"dry_run": true` and `xtquant_loaded` is forced to `false` (xtquant is never touched in that mode). All account commands raise; this mode is for offline development only.
+
+**Reading rules of thumb:**
+
+| You want to know… | Read… |
+|---|---|
+| Daemon process alive? | `daemon.state == "up"` |
+| xtquant loadable? | `daemon.xtquant_loaded == true` |
+| Trader session for an account dropped? | `accounts.<name>.trader.state == "lost"` |
+| When did it drop / when did it last connect? | `accounts.<name>.trader.last_disconnect_at` / `last_connect_at` |
+| Account safe to send orders? | `daemon.state == "up"` AND `accounts.<name>.trader.state == "alive"` AND `accounts.<name>.risk_breaker == "ok"` AND `accounts.<name>.baseline == "captured"` |
+| Account has never tried to log in (fresh daemon)? | `accounts.<name>.trader.state == "never_connected"` — run any `account` command to trigger lazy login |
+
+`miniqmt-cli health` prints a human summary of this body. Exit code rules:
+
+- **Exit 1** when any of these are true: daemon unreachable (`cannot reach daemon …`); `daemon.state != "up"` (e.g. xtquant failed to load); any `accounts.<name>.trader.state == "lost"`; any `accounts.<name>.risk_breaker == "tripped"`; any `accounts.<name>.baseline == "pending"` while that account's trader is `alive`.
+- **Exit 0** otherwise. In particular, a fresh daemon where every account is `never_connected` exits 0 — that's the normal lazy-load state, not an error.
 
 ## Global Options
 
@@ -188,13 +235,13 @@ Follow these steps in order. Each step has a purpose — skipping is how agents 
 
 **1. Pre-flight health — probe real connectivity, not just `/health`.**
 
-`health` returning `daemon_up_no_trader` is normal on a fresh daemon and is NOT a login failure (see the Prerequisites section). To confirm the account is actually usable, hit a trader-touching endpoint:
+`/health` showing `accounts.<name>.trader.state == "never_connected"` is normal on a fresh daemon and is NOT a login failure (see the Prerequisites section). To confirm the account is actually usable, hit a trader-touching endpoint:
 
 ```bash
 miniqmt-cli --format json account asset --account sim
 ```
 
-Success (`cash` / `total_asset` numeric) proves: daemon up → xtquant loaded → trader connected → account subscribed. After this, `health` will be `ready`.
+Success (`cash` / `total_asset` numeric) proves: daemon up → xtquant loaded → trader connected → account subscribed. After this, `accounts.<name>.trader.state` flips to `alive` and `baseline` to `captured`.
 
 If this fails with `trader.connect failed rc=...` or `trader.subscribe failed rc=...`, stop — investigate before sending any order.
 
@@ -447,9 +494,11 @@ Env overrides: `MINIQMT_CLI_SERVER_HOST`, `MINIQMT_CLI_SERVER_PORT`, `MINIQMT_CL
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | "cannot reach daemon" | Tunnel down or daemon stopped | Check `ssh -N -L ...` is running; `schtasks /run /tn MiniqmtDaemon` |
-| `daemon_up_xtquant_missing` | `qmt_path` wrong or miniQMT not installed | Edit server.toml `qmt_path`; ensure miniQMT client directory exists |
-| `daemon_up_no_trader` | Daemon's trader pool is empty — no account API has been called yet this process lifetime. Does NOT mean miniQMT is logged out. | Not an error. Run an `account` command to trigger lazy session creation; real login failures surface there |
-| `daemon_up_baseline_pending` | Trader is up but today's risk baseline wasn't captured (login-time capture failed, e.g. broker blip). Orders on the pending account will be rejected `BASELINE_PENDING`. | Run `miniqmt-cli account asset --account <name>` again — login re-captures baseline. Check daemon logs for `baseline capture after login failed` if it persists. |
+| `daemon.state == "degraded"` (xtquant_loaded=false) | `qmt_path` wrong or miniQMT not installed | Edit server.toml `qmt_path`; ensure miniQMT client directory exists |
+| `accounts.<name>.trader.state == "never_connected"` | No `account` API has been called for this account yet this daemon process lifetime. Does NOT mean miniQMT is logged out. | Not an error. Run any `account` command to trigger lazy session creation; real login failures surface there |
+| `accounts.<name>.trader.state == "lost"` | xtquant SDK reported `on_disconnected` (e.g. miniQMT client closed, broker dropped the session, transient IPC blip). The pool still holds the stale handle, and `get_trader` will return it as-is until the daemon process restarts. | **Restart the daemon** (`ssh <user>@<windows-host> "schtasks /run /tn MiniqmtDaemon"`) — that's the only reliable recovery. Re-running `account asset` does NOT trigger a reconnect: `get_trader` short-circuits on the stale entry. Read queries (`asset` / `positions`) may even appear to succeed via the SDK's local cache, but those numbers are last-known-good as of disconnect; orders and cancels will hit the dead broker channel and fail. Ensure miniQMT client is open and logged in before restart. |
+| `accounts.<name>.baseline == "pending"` | Trader is up but today's risk baseline wasn't captured (login-time capture failed, e.g. broker blip). Orders on the pending account will be rejected `BASELINE_PENDING`. | Run `miniqmt-cli account asset --account <name>` again — login re-captures baseline. Check daemon logs for `baseline capture after login failed` if it persists. |
+| `accounts.<name>.risk_breaker == "tripped"` | The account's risk breaker fired (e.g. daily loss limit hit). Opening orders blocked; closing sells and cancels still allowed. | `miniqmt-cli risk status --account <name>`; reset with `risk reset --account <name> --note "<reason>"` after confirming cause |
 | Exit code -1073741510 | Daemon was killed (Ctrl+C / task stopped) | Restart: `schtasks /run /tn MiniqmtDaemon` |
 | `GuardExit` on order | Safety guard blocked the order | Check: `--dry-run` was set, confirmation was declined, or `--confirm-live` missing/wrong |
 | `BrokerReject` | Broker refused the order | Check order params, market hours, account balance |

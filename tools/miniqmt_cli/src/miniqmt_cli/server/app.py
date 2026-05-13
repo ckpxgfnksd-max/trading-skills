@@ -61,25 +61,39 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
     @app.get("/health")
     async def health():
         sess = app.state.session
+
+        # daemon-self block: does NOT reflect broker / miniQMT — only this
+        # python process + xtquant module load.
+        daemon_block: dict = {"state": "up"}
         if dry_run:
-            return {"state": "ready", "dry_run": True}
-        # Risk breaker has highest priority — surfaces even if xtquant later fails
-        tripped = sess.risk.tripped_accounts()
-        if tripped:
-            return {"state": "risk_breaker_tripped", "tripped_accounts": tripped}
-        try:
-            await sess.ensure_xtquant()
-        except Exception as e:
-            return {"state": "daemon_up_xtquant_missing", "error": str(e)}
-        if sess.trader_logged_in_count() == 0:
-            return {"state": "daemon_up_no_trader"}
-        # Baseline pending: trader is up but some configured account hasn't captured baseline
-        pending_accounts = sess.risk.baseline_pending_accounts(list(sess.cfg.accounts.keys()))
-        if pending_accounts:
-            return {
-                "state": "daemon_up_baseline_pending",
-                "accounts_pending": pending_accounts,
+            daemon_block["dry_run"] = True
+            daemon_block["xtquant_loaded"] = False
+        else:
+            try:
+                await sess.ensure_xtquant()
+                daemon_block["xtquant_loaded"] = True
+            except Exception as e:
+                daemon_block["state"] = "degraded"
+                daemon_block["xtquant_loaded"] = False
+                daemon_block["xtquant_error"] = str(e)
+
+        # accounts block: per-account substates the daemon can observe.
+        # trader.state reflects what the daemon last heard on the SDK channel
+        # (xtquant connect / on_disconnected). It is not a probe of miniQMT
+        # or the broker — only an account command can definitively prove
+        # broker reachability.
+        tripped = set(sess.risk.tripped_accounts())
+        pending = set(sess.risk.baseline_pending_accounts(
+            list(sess.cfg.accounts.keys())
+        )) if daemon_block.get("xtquant_loaded") else set()
+        accounts_block: dict = {}
+        for name in sess.cfg.accounts:
+            accounts_block[name] = {
+                "trader": sess.trader_state_view(name),
+                "risk_breaker": "tripped" if name in tripped else "ok",
+                "baseline": "pending" if name in pending else "captured",
             }
-        return {"state": "ready"}
+
+        return {"daemon": daemon_block, "accounts": accounts_block}
 
     return app

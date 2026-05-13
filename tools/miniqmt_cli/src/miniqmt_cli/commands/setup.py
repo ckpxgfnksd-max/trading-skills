@@ -433,13 +433,24 @@ def step_smoke_test(state: WizardState) -> None:
     info("GET /health")
     try:
         h = t.get("/health")
-        state_val = h.get("state", "unknown")
-        if state_val in ("ready", "daemon_up_no_trader"):
-            ok(f"health: {state_val}")
-        elif state_val == "daemon_up_xtquant_missing":
-            warn(f"health: {state_val} — check server.toml qmt_path")
+        daemon = h.get("daemon") or {}
+        accounts = h.get("accounts") or {}
+        dstate = daemon.get("state", "unknown")
+        xt_loaded = daemon.get("xtquant_loaded", False)
+        if dstate != "up":
+            warn(f"health: daemon {dstate} (xtquant_loaded={xt_loaded}) — check server.toml qmt_path")
         else:
-            warn(f"health: {state_val}")
+            problems = []
+            for name, sub in accounts.items():
+                tstate = (sub.get("trader") or {}).get("state", "unknown")
+                if tstate == "lost":
+                    problems.append(f"{name}: trader lost")
+                if sub.get("risk_breaker") == "tripped":
+                    problems.append(f"{name}: risk breaker tripped")
+            if problems:
+                warn("health: " + "; ".join(problems))
+            else:
+                ok(f"health: daemon up, xtquant_loaded={xt_loaded}, {len(accounts)} account(s)")
     except click.ClickException as e:
         err(f"health probe: {e.message}")
         raise

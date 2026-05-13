@@ -378,3 +378,62 @@ def test_cli_risk_reset_live_without_confirm(cli_env, fake_xtquant, client):
     # ClickException default exit code (1) from transport error-surface path.
     assert result.exit_code != 0
     assert "confirm_live_last4" in result.output
+
+
+# ---------- `miniqmt-cli health` exit-code logic ----------
+
+def test_cli_health_fresh_daemon_exits_zero(cli_env, fake_xtquant):
+    """Fresh daemon, no account command yet — never_connected is normal."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health"])
+    assert result.exit_code == 0, result.output
+    assert "daemon: up" in result.output
+    assert "trader=never_connected" in result.output
+
+
+def test_cli_health_alive_after_login_exits_zero(cli_env, client, fake_xtquant):
+    """After a trader logs in, health is fully green and exits 0."""
+    assert client.get("/trade/asset", params={"account": "sim"}).status_code == 200
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health"])
+    assert result.exit_code == 0, result.output
+    assert "sim: trader=alive" in result.output
+    assert "risk_breaker=ok" in result.output
+
+
+def test_cli_health_trader_lost_exits_one(cli_env, client, fake_xtquant):
+    """xtquant disconnect callback must drive `health` to a non-zero exit so
+    cron / supervisor scripts can branch on it — this is the 12:05 incident
+    contract."""
+    assert client.get("/trade/asset", params={"account": "sim"}).status_code == 200
+    fake_xtquant.traders[-1].callback.on_disconnected()
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health"])
+    assert result.exit_code == 1, result.output
+    assert "sim: trader=lost" in result.output
+    assert "problem: sim: trader lost" in result.output
+
+
+def test_cli_health_breaker_tripped_exits_one(cli_env, client, fake_xtquant):
+    assert client.get("/trade/asset", params={"account": "sim"}).status_code == 200
+    client.app.state.session.risk.trip_breaker("sim", reason="cli-test")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health"])
+    assert result.exit_code == 1, result.output
+    assert "risk_breaker=tripped" in result.output
+    assert "problem: sim: risk breaker tripped" in result.output
+
+
+def test_cli_health_daemon_unreachable_exits_one(cli_env, monkeypatch):
+    """Transport-level failure (no daemon) must surface as exit 1 with a
+    `daemon: down` line so log scrapers can detect it."""
+    import httpx
+
+    def boom(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health"])
+    assert result.exit_code == 1, result.output
+    assert "daemon: down" in result.output

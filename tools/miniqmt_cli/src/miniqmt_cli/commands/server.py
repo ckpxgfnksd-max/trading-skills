@@ -136,15 +136,54 @@ def version(ctx):
 @click.command()
 @click.pass_context
 def health(ctx):
-    """Health check against the daemon."""
+    """Health check against the daemon.
+
+    Exit 0 when the daemon is up, xtquant is loaded, and no account shows a
+    real problem (lost trader, tripped breaker, pending baseline). A fresh
+    daemon where all accounts are `never_connected` still exits 0 — that's
+    the normal lazy-load state.
+    """
     t = make_transport(ctx)
     try:
         data = t.get("/health")
     except click.ClickException as e:
-        click.echo(f"state: daemon_down ({e.message})")
+        click.echo(f"daemon: down ({e.message})")
         ctx.exit(1)
-    state = data.get("state", "unknown")
-    click.echo(f"state: {state}")
-    if state in ("ready", "daemon_up_no_trader"):
-        ctx.exit(0)
-    ctx.exit(1)
+
+    daemon = data.get("daemon") or {}
+    accounts = data.get("accounts") or {}
+
+    xt_loaded = daemon.get("xtquant_loaded", False)
+    xt_extra = (
+        f" xtquant_loaded={xt_loaded}"
+        + (f" error={daemon['xtquant_error']!r}" if daemon.get("xtquant_error") else "")
+    )
+    click.echo(f"daemon: {daemon.get('state', 'unknown')}{xt_extra}")
+
+    problems: list[str] = []
+    if daemon.get("state") != "up":
+        problems.append("daemon not up")
+    for name, sub in accounts.items():
+        trader = sub.get("trader") or {}
+        tstate = trader.get("state", "unknown")
+        rb = sub.get("risk_breaker", "unknown")
+        bl = sub.get("baseline", "unknown")
+        line = f"  {name}: trader={tstate}"
+        if trader.get("last_connect_at"):
+            line += f" (connected {trader['last_connect_at']})"
+        if trader.get("last_disconnect_at"):
+            line += f" (disconnected {trader['last_disconnect_at']})"
+        line += f"  risk_breaker={rb}  baseline={bl}"
+        click.echo(line)
+        if tstate == "lost":
+            problems.append(f"{name}: trader lost")
+        if rb == "tripped":
+            problems.append(f"{name}: risk breaker tripped")
+        if bl == "pending" and tstate == "alive":
+            problems.append(f"{name}: baseline pending")
+
+    if problems:
+        for p in problems:
+            click.echo(f"problem: {p}", err=True)
+        ctx.exit(1)
+    ctx.exit(0)
