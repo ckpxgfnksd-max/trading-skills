@@ -5,6 +5,28 @@ description: Operate miniQMT/xtquant via the miniqmt-cli tool -- market data que
 
 # miniqmt-cli: Drive miniQMT / xtquant from the Command Line
 
+## Access Policy — read first
+
+**All programmatic access to the trading daemon MUST go through `miniqmt-cli`.** Direct HTTP calls to `http://127.0.0.1:8765/...` are no longer a supported integration surface — the URL space, payload shapes, and error semantics are internal implementation details and may change without notice.
+
+Reasons:
+
+- **One source of truth.** The CLI's command set is the only documented API. The HTTP routes underneath exist solely to let the CLI talk to the daemon over an SSH tunnel; their paths are unstable.
+- **Drift kills callers.** When a parallel HTTP reference existed, a polling agent followed a stale `/positions` / `/orders` / `/trades` (unprefixed) path and silently 404'd for hours. The CLI shields callers from this class of bug.
+- **Safety pipeline.** The CLI carries the masking, idempotency client_req_id generation, and `--confirm-live` handshake conventions. Bypassing it weakens those guarantees even though the daemon enforces most of them.
+
+Callers from non-Python runtimes should wrap the CLI as a subprocess (`subprocess.run(["miniqmt-cli", "account", "asset", "--account", "main", "--format", "json"], capture_output=True)`) rather than constructing HTTP requests by hand. SSE consumers should use `miniqmt-cli stream tick|kline|order ...` and parse its stdout, not subscribe to `/stream/*` directly.
+
+If you're an agent on a different host than the daemon, configure remote mode in `~/.miniqmt_cli/client.toml`:
+
+```toml
+[client]
+mode = "remote"
+server_url = "http://127.0.0.1:8765"   # the daemon, via SSH tunnel
+```
+
+Then bring up the tunnel (see [SSH Tunnel](#ssh-tunnel) below). The CLI then works transparently — no proxy config needed.
+
 ## Architecture
 
 Mac CLI (Click) --> SSH tunnel --> Windows FastAPI daemon (port 8765) --> xtquant/miniQMT
@@ -370,23 +392,6 @@ Restart the daemon on Windows:
 ssh <user>@<windows-host> "schtasks /run /tn MiniqmtDaemon"
 ```
 
-## HTTP API (for external agents)
-
-Every CLI command hits a JSON HTTP endpoint on the daemon. Agents that don't want to shell out to Click can call the HTTP surface directly — see the dedicated **miniqmt-http-api** skill for the full endpoint reference, payload shapes, and error codes.
-
-Quick map (full list in `skills/miniqmt-http-api/SKILL.md`):
-
-| CLI | HTTP |
-|-----|------|
-| `tick` / `kline` / `ticks` | `GET /data/tick` / `/data/kline` / `/data/ticks` |
-| `account asset/position/orders/trades` | `GET /trade/asset` / `/trade/positions` / `/trade/orders` / `/trade/trades` |
-| `order buy/sell --dry-run` | `GET /trade/preview` |
-| `order buy/sell` | `POST /trade/order` |
-| `order cancel` | `POST /trade/cancel` |
-| `risk status` / `reset` | `GET /risk/status` / `POST /risk/reset` |
-| `stream tick/kline/order` | `GET /stream/tick` / `/stream/kline` / `/stream/order` (SSE) |
-| `health` | `GET /health` |
-
 ## SSH Tunnel
 
 The tunnel is the lifeline between Mac CLI and Windows daemon.
@@ -461,5 +466,4 @@ Env overrides: `MINIQMT_CLI_SERVER_HOST`, `MINIQMT_CLI_SERVER_PORT`, `MINIQMT_CL
 
 ## Related Skills
 
-- **miniqmt-http-api** — HTTP/SSE endpoint reference for programmatic callers
-- **trading-analysis** — Money flow + signals built on top of `/data/ticks`
+- **trading-analysis** — Money flow + signals built on top of `miniqmt-cli ticks`

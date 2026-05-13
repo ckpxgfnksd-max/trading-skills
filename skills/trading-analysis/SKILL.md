@@ -193,5 +193,4 @@ Multiple stocks append a ranking:
 
 ## Related Skills
 
-- **miniqmt-cli** — The daemon and data source underneath
-- **miniqmt-http-api** — HTTP/SSE endpoints used by this tool
+- **miniqmt-cli** — The daemon and data source underneath; the only supported way to reach the trading daemon
