@@ -47,7 +47,7 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
                 watchdog.stop()
             _xt_shutdown()
 
-    app = FastAPI(title="miniqmt-cli daemon", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="miniqmt-cli daemon", version="0.3.0", lifespan=lifespan)
     app.state.session = SessionManager(cfg, dry_run=dry_run)
     app.include_router(data_router)
     app.include_router(trade_router)
@@ -56,7 +56,7 @@ def create_app(cfg: ServerConfig, dry_run: bool = False) -> FastAPI:
 
     @app.get("/version")
     def version():
-        return {"tag": "sp3", "version": "1.0"}
+        return {"tag": "sp4", "version": "1.1"}
 
     @app.get("/health")
     async def health():
