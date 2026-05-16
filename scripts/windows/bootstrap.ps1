@@ -21,6 +21,11 @@
 .PARAMETER TaskName
     Scheduled Task name. Default: MiniqmtDaemon
 
+.PARAMETER LogPath
+    File where the daemon's stdout+stderr are appended. Default:
+    %USERPROFILE%\miniqmt-daemon.log (kept outside $WinRepo so a clean
+    redeploy does not nuke historical logs).
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\windows\bootstrap.ps1
 #>
@@ -29,7 +34,8 @@
 param(
     [string]$WinRepo = "C:\apps\trading-skills",
     [string]$WinPython = "python",
-    [string]$TaskName = "MiniqmtDaemon"
+    [string]$TaskName = "MiniqmtDaemon",
+    [string]$LogPath = (Join-Path $env:USERPROFILE "miniqmt-daemon.log")
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,16 +58,15 @@ if (-not (Test-Path $WinRepo)) {
     New-Item -ItemType Directory -Path $WinRepo -Force | Out-Null
 }
 
-$logPath = Join-Path $WinRepo "daemon.log"
-Log "daemon log → $logPath"
+Log "daemon log → $LogPath"
 
 # 3. Write a small wrapper .cmd file to avoid Task Scheduler quoting hell.
-# The wrapper sets cwd, runs the daemon, and appends stdout+stderr to daemon.log.
+# The wrapper sets cwd, runs the daemon, and appends stdout+stderr to $LogPath.
 $wrapperPath = Join-Path $WinRepo "run-daemon.cmd"
 $wrapperBody = @"
 @echo off
 cd /d "$WinRepo"
-"$WinPython" -m miniqmt_cli.main serve >> "$logPath" 2>&1
+"$WinPython" -m miniqmt_cli.main serve >> "$LogPath" 2>&1
 "@
 Set-Content -Path $wrapperPath -Value $wrapperBody -Encoding ASCII
 Log "wrapper script → $wrapperPath"

@@ -26,7 +26,8 @@ Windows once, to run `bootstrap.ps1`.
    This uses `Register-ScheduledTask` to create a user-scope
    `MiniqmtDaemon` task that runs `python -m miniqmt_cli.main serve` at
    logon, restarts on failure, and writes stdout+stderr to
-   `C:\apps\trading-skills\daemon.log`.
+   `%USERPROFILE%\miniqmt-daemon.log` (override with `-LogPath`; the log
+   lives outside `$WinRepo` so a clean redeploy does not nuke history).
 5. Initialise the server config (still on Windows, in any shell):
    ```powershell
    python -m miniqmt_cli.main config server init
@@ -121,5 +122,5 @@ WIN_SERVICE=MiniqmtDaemonStaging ./scripts/deploy.sh
 | `health: daemon=degraded xtquant_loaded=False`   | `server.toml` `qmt_path` is wrong or miniQMT not installed there   |
 | `pip install` ImportError for `fastapi`          | Python interpreter in `$WIN_PYTHON` is not the one with our deps   |
 | `scp` succeeds but files not updated             | `$WIN_REPO` disagreement; check with `ssh $WIN_HOST dir $WIN_REPO` |
-| Task restarts but `/health` never becomes ready  | Check `daemon.log` under `$WIN_REPO`; likely xttrader login issue  |
-| Task shows state `Ready` but not `Running`        | `Start-ScheduledTask -TaskName MiniqmtDaemon`, then check daemon.log|
+| Task restarts but `/health` never becomes ready  | Check the daemon log at `%USERPROFILE%\miniqmt-daemon.log` (or wherever `-LogPath` points); likely xttrader login issue |
+| Task shows state `Ready` but not `Running`        | `Start-ScheduledTask -TaskName MiniqmtDaemon`, then check the daemon log |
