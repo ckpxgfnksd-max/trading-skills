@@ -138,15 +138,61 @@ miniqmt-cli ticks --code 000001.SZ --start 20260415093000 --end 20260415100000
 
 ### Real-time Streaming (SSE)
 
-Streams run until Ctrl+C. Output is one event per line.
+Streams run until Ctrl+C. Output is one event per line; use `--format json` for programmatic consumption (the table format is for ad-hoc inspection).
+
+**When to use `stream tick` vs `tick` (polling).** For long-running consumers (auto-traders, alpha pipelines), prefer one persistent `stream tick` per process over repeated `miniqmt-cli tick` calls:
+
+- `miniqmt-cli tick` reads `xtdata.get_full_tick()` — xtquant's process-internal snapshot cache. The daemon is a pure pass-through (no caching, no dedup, no field rewriting — grep `timetag` across the daemon source returns zero hits).
+- Short-lived `stream tick` sessions (subscribe → consume → unsubscribe) are the suspected trigger for a partial-field cache wedge in xtquant: **the `timetag` field can lock at a past value while `lastPrice` / `bidVol` / `askVol` continue updating normally.** Observed 2026-05-18: four codes (`600760.SH` / `600011.SH` / `000333.SZ` / `002179.SZ`) all locked at `timetag=20260518 09:32:06` for 13 minutes, daemon process otherwise healthy, watchdog silent, `trader=alive` from a connection that had been open since the previous Friday. Polling via `tick` reads the same wedged cache and does **not** recover the situation — only a daemon restart does.
+- Recommended pattern: **one persistent `stream tick` per consumer process, never unsubscribed during the trading day.** Reconnect on subprocess death; do not subscribe/unsubscribe per evaluation.
+
+#### Tick stream
 
 ```bash
-# Stream live ticks
+# Interactive (Ctrl+C to stop)
 miniqmt-cli stream tick --code 000001.SZ --code 600519.SH
 
-# Stream live klines (1m or 5m)
+# Programmatic consumption
+miniqmt-cli --format json stream tick --code 000001.SZ --code 600519.SH
+```
+
+**Event payload (JSON mode).** First line is the subscription envelope; subsequent lines each wrap one tick event. Codes that do not tick in an interval emit nothing for that interval.
+
+```json
+{"event": "subscribed", "codes": ["000001.SZ"], "seqs": [42]}
+{"tick": {"code": "000001.SZ", "timetag": "20260518 09:32:06", "lastPrice": 10.48,
+          "high": 10.52, "low": 10.41, "open": 10.45, "lastClose": 10.40,
+          "volume": 12345, "amount": 128943.50,
+          "bidPrice": [10.47, 10.46, 10.45, 10.44, 10.43],
+          "askPrice": [10.48, 10.49, 10.50, 10.51, 10.52],
+          "bidVol":   [100, 200, 300, 400, 500],
+          "askVol":   [150, 250, 350, 450, 550]}}
+{"tick": {...}, "dropped": 3}
+```
+
+- `event: subscribed` arrives exactly once at stream start — **consumers must skip it before processing ticks**.
+- `dropped: N` appears alongside a `tick` when the daemon's per-stream queue overflowed since the last emit (cap = 256). The dropped events are the oldest; the emitted `tick` is the freshest. Log it as a backpressure warning, not an error — it means your consumer is slower than the broker pushes.
+- Field set varies by xtquant SDK version. `code`, `timetag`, `lastPrice`, `high`, `low`, `bidVol`, `askVol` are present on standard A-share L1 feeds; anything else is best-effort.
+- `timetag` is a `"YYYYMMDD HH:MM:SS"` string; parse before using as a sort key. **If you see `timetag` static while other fields advance, you've hit the cache wedge — restart the daemon.**
+
+**Consuming `stream tick` from a long-running subprocess.** The boring details that bite:
+
+1. **`bufsize=1` + `env={..., "PYTHONUNBUFFERED": "1"}` on `Popen`.** Without both, Python's stdio block-buffers the daemon's per-line output into ~4 KB chunks; consumers see silent stretches where ticks have been emitted but are stuck in the pipe.
+2. **Drain `stderr` in a separate thread.** `miniqmt-cli` rarely writes to stderr, but if the pipe buffer fills (tens of KB) the subprocess blocks on `write(stderr)` and the tick stream goes silent without any visible error.
+3. **No SSE keepalive from the daemon.** During a quiet stretch the daemon emits no bytes — a wedged daemon and a quiet market look identical on the wire. Consumers MUST run their own stale watcher: if no tick has arrived for N seconds in trading hours (~30s for liquid watchlists), kill the subprocess and reconnect. Trigger on "no event from ANY watched code" rather than per-code so a single illiquid name doesn't false-positive.
+4. **Reconnect with exponential backoff** (1s → 30s cap). SSH-tunnel blips and daemon restarts will close the SSE stream; resetting backoff after one successful tick keeps reconnects fast in steady state.
+5. **SIGTERM bypasses the CLI's `finally` block.** `miniqmt-cli stream tick` only reaches its unsubscribe path on `KeyboardInterrupt` (SIGINT). For long-running consumers this is intentional — not unsubscribing avoids the cache wedge above. Use SIGINT only when you actually want a clean unsubscribe (testing/debug); for normal restart, SIGTERM is fine.
+6. **The tick callback must be near-instant.** Block the read loop and the daemon's per-stream queue (cap 256) fills, you start seeing `dropped: N`, and the freshest tick is all you get. Push ticks to a worker queue immediately; evaluate strategies elsewhere.
+
+#### Kline stream
+
+```bash
 miniqmt-cli stream kline --code 000001.SZ --period 1m
 ```
+
+Each event wraps one bar: `{"bar": {"code": ..., "time": ..., "open": ..., "high": ..., "low": ..., "close": ..., "volume": ...}}`. The daemon coalesces by `(code, bar_start_ts)` and yields only the latest bar per key, so a slow consumer never sees duplicate stale bars.
+
+#### Order stream
 
 ```bash
 # Stream order lifecycle events (submitted / partially filled / filled / cancelled / rejected)
