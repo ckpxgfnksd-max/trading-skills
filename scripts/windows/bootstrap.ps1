@@ -114,6 +114,52 @@ if (-not $task) {
 }
 Log "$TaskName registered (state: $($task.State))"
 
+# 4b. Register the nightly-restart task. Runs at 08:50 Mon-Fri so xtquant
+# starts the day with a clean snapshot cache; daemon uptime crossing a
+# market-close boundary is the empirically supported trigger for the
+# `timetag` cache wedge (incident 2026-05-18; see skills/miniqmt-cli/SKILL.md).
+$restartTaskName = "${TaskName}NightlyRestart"
+$restartScriptPath = Join-Path $WinRepo "scripts\windows\nightly-restart.ps1"
+
+$restartAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$restartScriptPath`" -WinService `"$TaskName`""
+
+$restartTrigger = New-ScheduledTaskTrigger `
+    -Weekly `
+    -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday `
+    -At "08:50"
+
+$restartSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+
+$restartPrincipal = New-ScheduledTaskPrincipal `
+    -UserId $env:USERNAME `
+    -LogonType Interactive `
+    -RunLevel Limited
+
+Log "registering Scheduled Task $restartTaskName (Mon-Fri 08:50)"
+try {
+    Register-ScheduledTask `
+        -TaskName $restartTaskName `
+        -Action $restartAction `
+        -Trigger $restartTrigger `
+        -Settings $restartSettings `
+        -Principal $restartPrincipal `
+        -Description "Nightly restart of $TaskName for clean xtquant cache" `
+        -Force | Out-Null
+} catch {
+    throw "Register-ScheduledTask failed for ${restartTaskName}: $_"
+}
+$restartTask = Get-ScheduledTask -TaskName $restartTaskName -ErrorAction SilentlyContinue
+if (-not $restartTask) {
+    throw "task registration succeeded but Get-ScheduledTask cannot find $restartTaskName"
+}
+Log "$restartTaskName registered (state: $($restartTask.State))"
+
 # 5. Config sanity
 $serverCfg = Join-Path $env:USERPROFILE ".miniqmt_cli\server.toml"
 if (-not (Test-Path $serverCfg)) {
