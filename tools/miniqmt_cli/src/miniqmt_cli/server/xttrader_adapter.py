@@ -193,11 +193,22 @@ def order_stock(
     volume: int,
     price: float,
     order_type: str = "limit",
+    order_remark: str = "",
 ) -> Dict[str, Any]:
+    """Submit a stock order.
+
+    order_remark: optional broker-side remark (xtquant API param 8). trendgo
+    autotrader uses this to plumb intent_id[:8] so PG.orders.order_remark and
+    broker callback both carry the originating intent. Empty default keeps
+    backward compat with callers that don't supply it.
+    """
     xttrader_c = _xttrader_c_module()
     order_type_const, price_type_const = _side_to_consts(side, order_type, xttrader_c)
+    # xtquant.trader.order_stock signature: (account, code, order_type,
+    #   order_volume, price_type, price, strategy_name='', order_remark='')
     seq = trader.order_stock(
-        acc, code, order_type_const, int(volume), price_type_const, float(price)
+        acc, code, order_type_const, int(volume), price_type_const, float(price),
+        "", str(order_remark or ""),
     )
     return {"seq": int(seq)}
 

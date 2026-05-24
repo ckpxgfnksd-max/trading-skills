@@ -25,23 +25,25 @@ def _common_opts(f):
     f = click.option("--yes", is_flag=True, default=False)(f)
     f = click.option("--confirm-live", default=None, help="Last 4 digits of live account_id")(f)
     f = click.option("--wait", "wait_secs", default=None, type=int, help="Wait N seconds for terminal order status")(f)
+    f = click.option("--order-remark", "order_remark", default=None,
+                     help="Optional broker-side order remark (e.g. originating intent_id[:8])")(f)
     return f
 
 
 @order.command()
 @_common_opts
 @click.pass_context
-def buy(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
+def buy(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs, order_remark):
     """Buy order."""
-    _place(ctx, "buy", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs)
+    _place(ctx, "buy", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs, order_remark)
 
 
 @order.command()
 @_common_opts
 @click.pass_context
-def sell(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
+def sell(ctx, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs, order_remark):
     """Sell order."""
-    _place(ctx, "sell", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs)
+    _place(ctx, "sell", account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs, order_remark)
 
 
 @order.command("cancel")
@@ -72,7 +74,7 @@ def cancel_cmd(ctx, account, order_id, yes):
 TERMINAL_STATUSES = {"filled", "cancelled", "rejected"}
 
 
-def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs):
+def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, confirm_live, wait_secs, order_remark=None):
     t = make_transport(ctx)
     meta = t.get("/trade/account/meta", params={"name": account})
     if meta.get("requires_confirm_live"):
@@ -122,6 +124,8 @@ def _place(ctx, side, account, code, volume, price, order_type, dry_run, yes, co
         "client_req_id": str(uuid.uuid4()),
         "confirm_live_last4": confirm_live,
     }
+    if order_remark:
+        body["order_remark"] = order_remark
     resp = t.post("/trade/order", body=body)
     if resp.get("status") == "rejected":
         raise BrokerReject(f"broker rejected: seq={resp.get('seq')}")

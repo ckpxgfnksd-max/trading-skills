@@ -163,6 +163,10 @@ class OrderRequest(BaseModel):
     type: str = Field("limit", pattern="^(limit|market)$")
     client_req_id: str
     confirm_live_last4: Optional[str] = None
+    # 透传给 xtquant trader.order_stock 的 order_remark（≤ 24 chars 通常安全）
+    # trendgo autotrader 用此塞 intent_id 前 8 位，让 PG.orders.order_remark +
+    # broker 端 callback 都能反向追溯 intent。不填 = 行为不变。
+    order_remark: Optional[str] = None
 
 
 class CancelRequest(BaseModel):
@@ -265,6 +269,7 @@ async def place_order(request: Request, body: OrderRequest):
             xttrader_adapter.order_stock,
             handle.trader, handle.acc, body.code, body.side,
             body.volume, body.price, body.type,
+            body.order_remark or "",
             timeout=XT_TIMEOUT_SUBMIT, label="order_stock",
         )
     except XtCallTimeout as e:
